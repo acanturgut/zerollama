@@ -7,12 +7,7 @@ import modelsController from './controllers/models';
 import chatController from './controllers/chat';
 import ollamaControlController from './controllers/ollama-control';
 import webSearchController from './controllers/web-search';
-import {
-  createDashboard,
-  startStatusMonitor,
-  log,
-  getScreen,
-} from './startup/dashboard';
+import { createDashboard, startStatusMonitor, log, getScreen } from './startup/dashboard';
 import { setupKeyboardShortcuts } from './startup/keyboard';
 import { checkConnection, stopOllama, startOllama } from './services/ollama';
 

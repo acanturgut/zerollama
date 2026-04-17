@@ -27,7 +27,9 @@ A terminal-based middleware proxy for [Ollama](https://ollama.com) with a real-t
 ## Installation
 
 ```bash
-git clone <repo-url> && cd zerollama
+git clone https://github.com/acanturgut/zerollama && cd zerollama
+chmod +x scripts/install-requirements.sh
+./scripts/install-requirements.sh
 yarn install
 ```
 
