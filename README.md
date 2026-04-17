@@ -2,27 +2,56 @@
 
 <img width="1412" height="1056" alt="Screenshot 2026-04-17 at 03 13 27" src="https://github.com/user-attachments/assets/6dd8101f-bec7-4d89-8502-0cdd640b0819" />
 
-A terminal-based middleware proxy for [Ollama](https://ollama.com) with a real-time dashboard. Run it on your local network to monitor, manage, and interact with Ollama from a rich TUI.
+A middleware proxy for [Ollama](https://ollama.com) that sits between your apps and the Ollama server. It adds rate limiting, caching, request queuing, web search, RAG, session management, and an OpenAI-compatible API — all accessible over your local network. It also ships with an optional terminal UI (`zlm`) that can attach to the running server from any terminal window.
 
-## Features
+## Architecture
 
-- **Proxy** – forwards all Ollama API requests (`/api/chat`, `/api/tags`, `/api/pull`, etc.) with rate limiting, CORS, and Helmet security headers
-- **Built-in web search** – `/api/chat` injects a `web_search` tool for tool-capable Ollama models, and `/api/web-search` is available for direct calls
-- **Terminal dashboard** – blessed-based TUI with live panels for logs, responses, session stats, and system info
-- **Model management** – browse installed models, pull new ones, delete, set a default/favorite, search HuggingFace for GGUF models
-- **Config editor** – edit Ollama environment variables (context length, KV cache type, flash attention, GPU layers, etc.) with hardware presets for Apple Silicon and NVIDIA GPUs
-- **Persistent settings** – Ollama config and the web search toggle are saved to `~/.zerollama/settings.json` and restored on next launch
-- **Debug chat** – built-in chat interface to test models directly from the dashboard
-- **Benchmarking** – run predefined prompts against the selected model and view a scored results table
-- **API docs viewer** – list all proxy endpoints with one-click curl copy
-- **Ollama lifecycle** – start, stop, restart, and update Ollama from keyboard shortcuts
-- **RAM monitor** – live memory usage in the top banner
+```
+┌──────────────┐      ┌──────────────────────┐      ┌────────────┐
+│  Your Apps   │─────▶│  Zerollama (middleware) │─────▶│   Ollama   │
+│  curl, SDKs  │ HTTP │  :3001                 │ HTTP │  :11434    │
+└──────────────┘      └──────────────────────┘      └────────────┘
+                              ▲
+                              │ attach (SSE + REST)
+                       ┌──────┴───────┐
+                       │   zlm (TUI)  │
+                       │  any terminal │
+                       └──────────────┘
+```
+
+**Middleware** (`yarn start`) — headless Express server on port 3001. Always runs. Handles all API traffic, caching, queuing, rate limiting, web search, RAG, sessions.
+
+**Terminal UI** (`zlm`) — optional blessed-based TUI that attaches to the running server. Open and close it from any terminal, any time, without affecting the middleware.
+
+## Middleware Features
+
+- **Proxy** – forwards Ollama API requests with CORS, Helmet security headers, and rate limiting
+- **OpenAI-compatible** – `/v1/chat/completions` and `/v1/models` work with any OpenAI SDK
+- **Web search** – automatic `web_search` tool injection for tool-capable models + direct `/api/web-search` endpoint
+- **RAG** – index local directories, auto-inject relevant file context into prompts
+- **Prompt caching** – identical prompts return cached responses instantly (configurable TTL)
+- **Request queue** – concurrent request dispatching with configurable concurrency
+- **Session management** – persistent chat sessions with history, auto-naming, REST API
+- **Multi-backend** – load-balance across multiple Ollama instances
+- **Ollama lifecycle** – start/stop/restart Ollama via REST API
+- **SSE events** – real-time log streaming via `/api/events` for monitoring
+- **Auth** – optional API key authentication via `Authorization: Bearer` or `x-api-key`
+- **Webhooks** – POST response summaries to external URLs
+
+## Terminal UI Features
+
+- **Live dashboard** – panels for logs, responses, session stats, system info, running models
+- **Model management** – browse, pull, delete models; search HuggingFace for GGUF models
+- **Debug chat** – built-in chat with session support (`:q` quit, `:s` sessions, `:n` new session)
+- **Config editor** – edit Ollama env vars with hardware presets (Apple Silicon, NVIDIA)
+- **Benchmarking** – run predefined prompts and view scored results
+- **Ollama control** – start/stop/restart/update with confirmation dialogs showing running models
 
 ## Requirements
 
 - **Node.js** >= 18
 - **Ollama** installed and available on `PATH` ([install guide](https://ollama.com/download))
-- macOS, Linux, or WSL (blessed requires a proper terminal)
+- macOS, Linux, or WSL (TUI requires a proper terminal)
 
 ## Installation
 
@@ -31,20 +60,29 @@ git clone https://github.com/acanturgut/zerollama && cd zerollama
 chmod +x scripts/install-requirements.sh
 ./scripts/install-requirements.sh
 yarn install
+yarn build
+npm link   # registers the `zlm` command globally
 ```
 
 ## Usage
 
 ```bash
-# Development (ts-node)
-yarn dev
-
-# Production
-yarn build
+# Start the middleware server (headless)
 yarn start
+
+# Attach the terminal UI from any terminal window
+zlm
 ```
 
-The proxy starts on **http://localhost:3001** by default. Point any Ollama-compatible client at this address instead of the default `localhost:11434`.
+`yarn start` runs the middleware only — no TUI, just the API server. Open as many `zlm` sessions as you want; closing them doesn't affect the server.
+
+```bash
+# Other modes
+yarn start --ui         # Start server with embedded TUI (all-in-one)
+yarn dev                # Development mode (ts-node)
+```
+
+The middleware listens on **http://localhost:3001** by default. Point any Ollama-compatible client at this address.
 
 ### Environment variables
 
@@ -66,22 +104,32 @@ The proxy starts on **http://localhost:3001** by default. Point any Ollama-compa
 | `RAG_CHUNK_SIZE`         | `1000`                   | Max characters per RAG chunk                                       |
 | `RAG_TOP_K`              | `4`                      | Number of RAG chunks injected as context                           |
 
-## OpenAI-compatible API
-
-Zerollama exposes a `/v1/chat/completions` endpoint compatible with the OpenAI client spec. Point any OpenAI SDK at `http://localhost:3001` with any non-empty API key:
-
-```bash
-curl http://localhost:3001/v1/chat/completions \
-  -H 'Authorization: Bearer any-key' \
-  -H 'Content-Type: application/json' \
-  -d '{"model":"llama3","messages":[{"role":"user","content":"Hello"}]}'
-```
-
-A model list is also available at `GET /v1/models`.
-
 ## API Reference
 
 Full endpoint documentation with request/response examples: **[docs/API-Endpoints.md](docs/API-Endpoints.md)**
+
+### Quick examples
+
+```bash
+# Chat (Ollama-native format)
+curl -X POST http://localhost:3001/api/chat \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"llama3.2","messages":[{"role":"user","content":"Hello"}],"stream":false}'
+
+# Chat (OpenAI-compatible)
+curl http://localhost:3001/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"llama3.2","messages":[{"role":"user","content":"Hello"}]}'
+
+# Web search
+curl 'http://localhost:3001/api/web-search?q=latest+ollama+release'
+
+# Server status
+curl http://localhost:3001/api/status
+
+# Ollama control
+curl -X POST http://localhost:3001/api/ollama/start
+```
 
 ## Docker
 
@@ -91,71 +139,43 @@ docker compose up -d
 
 Ollama must be running on the host. On macOS/Windows it is reachable at `host.docker.internal:11434` (the default). On Linux `extra_hosts: host.docker.internal:host-gateway` is wired automatically in `docker-compose.yml`.
 
-## RAG (Retrieval-Augmented Generation)
+## Terminal UI Keyboard Shortcuts
 
-Index local directories so the model automatically receives relevant file context with every prompt:
+These shortcuts are available in the `zlm` TUI (or `yarn start --ui`):
 
-```bash
-# Index one or more directories
-curl -X POST http://localhost:3001/api/rag/index \
-  -H 'Content-Type: application/json' \
-  -d '{"directories":["/path/to/your/project"]}'
+| Key       | Action                         |
+| --------- | ------------------------------ |
+| `s`       | Start Ollama                   |
+| `x`       | Stop Ollama                    |
+| `r`       | Restart Ollama                 |
+| `l`       | View running/loaded models     |
+| `m`       | Open model picker              |
+| `d`       | Toggle debug chat              |
+| `c`       | Open config editor             |
+| `p`       | Preset picker                  |
+| `e`       | Show API endpoints             |
+| `b`       | Run benchmark                  |
+| `i`       | Toggle web search              |
+| `n`       | Toggle reasoning               |
+| `S`       | Session picker                 |
+| `N`       | New chat session               |
+| `H`       | History viewer                 |
+| `w`       | Toggle log wrap                |
+| `t`       | Toggle response truncation     |
+| `R`       | Toggle raw JSON responses      |
+| `u`       | Update Ollama                  |
+| `h`       | Help                           |
+| `[` / `]` | Resize left info pane          |
+| `{` / `}` | Resize middle logs pane        |
+| `q`       | Quit TUI (server keeps running)|
 
-# Check index stats
-curl http://localhost:3001/api/rag/stats
+### Debug chat commands
 
-# Manual similarity search
-curl -X POST http://localhost:3001/api/rag/query \
-  -H 'Content-Type: application/json' \
-  -d '{"query":"how does auth work","topK":5}'
-
-# Clear index
-curl -X DELETE http://localhost:3001/api/rag/index
-```
-
-Supported file types: `.md`, `.txt`, `.ts`, `.js`, `.py`, `.go`, `.rs`, `.java`, `.c`, `.cpp`, `.swift`, and more. The index persists at `~/.zerollama/rag/`.
-
-## Prompt caching
-
-Identical prompts return cached responses instantly. Controlled via `CACHE_TTL_SECONDS` (default 300s, set to `0` to disable) and `CACHE_MAX_ENTRIES` (default 200). Only non-streaming requests are cached.
-
-## Request queue
-
-Concurrent requests are queued and dispatched up to `QUEUE_MAX_CONCURRENT` (default 2) at a time. Queue depth, active count, and drop stats are shown in the TUI info pane.
-
-## Multi-backend routing
-
-Set `OLLAMA_BACKENDS=http://host1:11434,http://host2:11434` to load-balance across multiple Ollama instances. Zerollama picks the healthiest backend with the fewest active requests. Backend status is shown in the TUI info pane.
-
-## Web search
-
-Tool-capable models can call a built-in `web_search` tool automatically through `/api/chat`. Zerollama executes the search server-side and feeds the results back to the model as a tool response.
-
-You can also call the search endpoint directly:
-
-```bash
-curl 'http://localhost:3001/api/web-search?q=latest%20ollama%20release'
-```
-
-## Keyboard shortcuts
-
-| Key       | Action                             |
-| --------- | ---------------------------------- | --- | --------- | ---------------------------- |
-| `s`       | Start Ollama                       |
-| `x`       | Stop Ollama                        |
-| `r`       | Restart Ollama                     |
-| `c`       | Open config editor                 |
-| `d`       | Toggle debug chat                  |
-| `m`       | Open model picker                  |
-| `e`       | Show API endpoints                 |
-| `b`       | Run benchmark                      |
-| `i`       | Toggle built-in web search         |
-| `H`       | History viewer (navigate with ↑/↓) |     | `[` / `]` | Shrink / grow left info pane |
-| `{` / `}` | Shrink / grow middle logs pane     |     | `w`       | Toggle log line wrap         |
-| `t`       | Toggle response truncation         |
-| `R`       | Toggle raw JSON responses          |
-| `u`       | Update Ollama to latest release    |
-| `q`       | Quit                               |
+| Command | Action               |
+| ------- | -------------------- |
+| `:q`    | Quit debug chat      |
+| `:s`    | Open session picker  |
+| `:n`    | New chat session     |
 
 ## License
 
