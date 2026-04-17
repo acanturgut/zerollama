@@ -12,7 +12,6 @@ import {
   startStatusMonitor,
   log,
   getScreen,
-  setSelectedModel,
 } from './startup/dashboard';
 import { setupKeyboardShortcuts } from './startup/keyboard';
 import { checkConnection, stopOllama, startOllama } from './services/ollama';
@@ -42,10 +41,23 @@ app.use((err: Error, _req: express.Request, res: express.Response, _next: expres
 });
 
 // ─── Graceful shutdown ───────────────────────────────────────────────────────
-let server: http.Server;
+const server: http.Server = app.listen(PORT, '0.0.0.0', async () => {
+  createDashboard(() => shutdown('keyboard'));
+  setupKeyboardShortcuts(() => shutdown('keyboard'));
+  log(`Server listening on 0.0.0.0:${PORT}`);
+
+  // Check Ollama in the background — don't block the UI
+  let ollamaOk = await checkConnection();
+  if (!ollamaOk) {
+    log(`Ollama not running — starting automatically…`);
+    ollamaOk = await startOllama();
+    log(ollamaOk ? 'Ollama started' : 'Ollama failed to start');
+  }
+  statusInterval = startStatusMonitor(ollamaOk);
+});
 let statusInterval: NodeJS.Timeout;
 
-function shutdown(signal = 'signal') {
+function shutdown(_signal = 'signal') {
   clearInterval(statusInterval);
   stopOllama().catch(() => {});
   const s = getScreen();
@@ -61,20 +73,5 @@ function shutdown(signal = 'signal') {
 }
 
 // ─── Start ───────────────────────────────────────────────────────────────────
-server = app.listen(PORT, '0.0.0.0', async () => {
-  createDashboard(() => shutdown('keyboard'));
-  setupKeyboardShortcuts(() => shutdown('keyboard'));
-  log(`Server listening on 0.0.0.0:${PORT}`);
-
-  // Check Ollama in the background — don't block the UI
-  let ollamaOk = await checkConnection();
-  if (!ollamaOk) {
-    log(`Ollama not running — starting automatically…`);
-    ollamaOk = await startOllama();
-    log(ollamaOk ? 'Ollama started' : 'Ollama failed to start');
-  }
-  statusInterval = startStatusMonitor(ollamaOk);
-});
-
 process.on('SIGINT', () => shutdown('SIGINT'));
 process.on('SIGTERM', () => shutdown('SIGTERM'));

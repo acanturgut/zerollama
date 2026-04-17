@@ -1,4 +1,5 @@
 import blessed from 'blessed';
+import { execSync } from 'child_process';
 import * as os from 'os';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -832,7 +833,9 @@ export function startStatusMonitor(initialStatus: boolean): NodeJS.Timeout {
             refreshUI();
           }
         }
-      } catch {}
+      } catch {
+        // Ignore transient fetch errors while polling model tags.
+      }
     }
   }, 5_000);
   interval.unref();
@@ -1306,8 +1309,10 @@ async function pullModel(name: string, info?: PullModelInfo): Promise<void> {
     let lastLoggedStatus = '';
     let lineCount = 0;
 
-    while (true) {
+    let streamDone = false;
+    while (!streamDone) {
       const { done, value } = await reader.read();
+      streamDone = done;
       if (done) break;
       buf += decoder.decode(value, { stream: true });
       const lines = buf.split('\n');
@@ -1888,13 +1893,14 @@ function detectPlatform(): 'apple' | 'nvidia' | 'unknown' {
   if (platform === 'darwin' && (arch === 'arm64' || arch === 'arm')) return 'apple';
   // Check for NVIDIA GPU on Linux/Windows
   try {
-    const { execSync } = require('child_process');
     const out = execSync('nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null', {
       encoding: 'utf-8',
       timeout: 3000,
     });
     if (out.trim()) return 'nvidia';
-  } catch {}
+  } catch {
+    // nvidia-smi not present, keep unknown platform.
+  }
   return 'unknown';
 }
 
@@ -2681,7 +2687,6 @@ export function showEndpoints(): void {
   box.key(['enter', 'return'], () => {
     const curl = endpoints[selected].curl;
     try {
-      const { execSync } = require('child_process');
       execSync('pbcopy', { input: curl });
       box.setLabel(` {bold}Copied!{/bold} {green-fg}${endpoints[selected].path}{/green-fg} `);
       scheduleRender();
@@ -2700,7 +2705,6 @@ export function showEndpoints(): void {
       selected = n - 1;
       const curl = endpoints[selected].curl;
       try {
-        const { execSync } = require('child_process');
         execSync('pbcopy', { input: curl });
         box.setLabel(` {bold}Copied!{/bold} {green-fg}${endpoints[selected].path}{/green-fg} `);
         refresh();
