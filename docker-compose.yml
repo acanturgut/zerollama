@@ -4,7 +4,7 @@ services:
     container_name: zerollama
     restart: unless-stopped
     ports:
-      - '3001:3001'
+      - "3001:3001"
     environment:
       # Ollama must be reachable from the container.
       # If Ollama runs on the host, use host.docker.internal on macOS/Windows
@@ -22,9 +22,9 @@ services:
       - zerollama-data:/root/.zerollama
     extra_hosts:
       # Allow container to reach Ollama running on the host (Linux)
-      - 'host.docker.internal:host-gateway'
+      - "host.docker.internal:host-gateway"
     healthcheck:
-      test: ['CMD', 'curl', '-f', 'http://localhost:3001/health']
+      test: ["CMD", "curl", "-f", "http://localhost:3001/health"]
       interval: 15s
       timeout: 5s
       retries: 3

@@ -7,7 +7,9 @@ export const PORT = parseInt(process.env.PORT ?? '3001', 10);
 
 interface RuntimeSettings {
   webSearchEnabled?: boolean;
+  reasoningEnabled?: boolean;
   ollamaConfig?: { [key: string]: string };
+  activePreset?: string;
 }
 
 const SETTINGS_DIR = path.join(os.homedir(), '.zerollama');
@@ -37,6 +39,8 @@ const persistedSettings = readRuntimeSettings();
 let webSearchEnabled = persistedSettings.webSearchEnabled ?? process.env.WEB_SEARCH_ENABLED !== '0';
 export const WEB_SEARCH_MAX_RESULTS = parseInt(process.env.WEB_SEARCH_MAX_RESULTS ?? '5', 10);
 
+let reasoningEnabled = persistedSettings.reasoningEnabled ?? process.env.REASONING_ENABLED !== '0';
+
 export function isWebSearchEnabled(): boolean {
   return webSearchEnabled;
 }
@@ -51,4 +55,14 @@ export function toggleWebSearchEnabled(): boolean {
   webSearchEnabled = !webSearchEnabled;
   writeRuntimeSettings({ webSearchEnabled });
   return webSearchEnabled;
+}
+
+export function isReasoningEnabled(): boolean {
+  return reasoningEnabled;
+}
+
+export function toggleReasoningEnabled(): boolean {
+  reasoningEnabled = !reasoningEnabled;
+  writeRuntimeSettings({ reasoningEnabled });
+  return reasoningEnabled;
 }

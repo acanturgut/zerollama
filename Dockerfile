@@ -27,7 +27,7 @@ COPY --from=builder /app/dist ./dist
 EXPOSE 3001
 
 HEALTHCHECK --interval=15s --timeout=5s --start-period=10s --retries=3 \
-  CMD curl -f http://localhost:3001/health || exit 1
+    CMD curl -f http://localhost:3001/health || exit 1
 
 # Zerollama runs in headless mode inside Docker (no blessed TUI)
 ENV NODE_ENV=production

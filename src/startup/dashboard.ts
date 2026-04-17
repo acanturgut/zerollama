@@ -9,9 +9,15 @@ import {
   isWebSearchEnabled,
   readRuntimeSettings,
   toggleWebSearchEnabled,
+  isReasoningEnabled,
+  toggleReasoningEnabled,
   writeRuntimeSettings,
 } from '../config';
-import { checkConnection, restartOllama, updateOllama } from '../services/ollama';
+import { checkConnection, restartOllama, startOllama, stopOllama } from '../services/ollama';
+import { cacheStats } from '../services/prompt-cache';
+import { queueStats } from '../services/request-queue';
+import { backendStats, healthCheckAll, isMultiBackend } from '../services/backend-router';
+import { ragStats } from '../services/rag';
 
 // ─── Debounced render ───────────────────────────────────────────────────────
 let renderPending = false;
@@ -169,6 +175,7 @@ interface GpuInfo {
 }
 
 let lastGpuInfo: GpuInfo[] = [];
+let lastRunningModels: RunningModel[] = [];
 
 function pollGpu(): GpuInfo[] {
   const platform = os.platform();
@@ -276,6 +283,14 @@ let ollamaConfig: OllamaConfig = {
   ...(readRuntimeSettings().ollamaConfig ?? {}),
 };
 
+// Resolve to short display name on boot (settings stores the full name)
+let activePresetName: string | null = (() => {
+  const stored = readRuntimeSettings().activePreset ?? null;
+  if (!stored) return null;
+  // Will be resolved to short name after CONFIG_PRESETS is defined (see below)
+  return stored;
+})();
+
 export function getOllamaConfig(): OllamaConfig {
   return { ...ollamaConfig };
 }
@@ -288,24 +303,124 @@ export function setOllamaConfig(cfg: Partial<OllamaConfig>): void {
 
 let configRestartInProgress = false;
 
-async function restartOllamaAfterConfigChange(reason: string): Promise<void> {
+// ─── Fetch currently loaded / running models from Ollama (/api/ps) ───────
+interface RunningModel {
+  name: string;
+  size: number;
+  sizeVram: number;
+  expiresAt: string;
+}
+
+async function fetchRunningModels(): Promise<RunningModel[]> {
+  try {
+    const resp = await fetch(`${OLLAMA_URL}/api/ps`);
+    if (!resp.ok) return [];
+    const data = (await resp.json()) as any;
+    return (data.models ?? []).map((m: any) => ({
+      name: m.name ?? m.model ?? '?',
+      size: m.size ?? 0,
+      sizeVram: m.size_vram ?? 0,
+      expiresAt: m.expires_at ?? '',
+    }));
+  } catch {
+    return [];
+  }
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes >= 1e9) return (bytes / 1e9).toFixed(1) + ' GB';
+  if (bytes >= 1e6) return (bytes / 1e6).toFixed(0) + ' MB';
+  return bytes + ' B';
+}
+
+// ─── Confirm restart dialog (K9s-style: show what's running, let user decide)
+async function confirmOllamaRestart(reason: string): Promise<void> {
   if (configRestartInProgress) {
     log(`[${new Date().toISOString()}] Config restart already in progress`);
     return;
   }
-  configRestartInProgress = true;
-  try {
-    log(`[${new Date().toISOString()}] ${reason} — restarting Ollama to apply changes…`);
-    const ok = await restartOllama();
-    setOllamaStatus(ok);
-    log(
-      ok
-        ? `[${new Date().toISOString()}] Ollama restarted with updated config`
-        : `[${new Date().toISOString()}] Ollama did not respond after config restart`,
-    );
-  } finally {
-    configRestartInProgress = false;
+
+  const reachable = await checkConnection();
+  if (!reachable) {
+    // Ollama not running — just log, don't force start
+    log(`[${new Date().toISOString()}] ${reason} — Ollama not running, changes will apply on next start`);
+    return;
   }
+
+  const running = await fetchRunningModels();
+
+  const lines: string[] = [
+    '',
+    `  {bold}${reason}{/bold}`,
+    '',
+    '  Ollama needs to restart to apply the new configuration.',
+  ];
+
+  if (running.length > 0) {
+    lines.push('', '  {yellow-fg}Currently loaded models:{/yellow-fg}');
+    for (const m of running) {
+      const vram = m.sizeVram > 0 ? `  VRAM ${formatBytes(m.sizeVram)}` : '';
+      lines.push(`    {bold}${m.name}{/bold}  ${formatBytes(m.size)}${vram}`);
+    }
+    lines.push('', '  {red-fg}Restarting will unload all models.{/red-fg}');
+  } else {
+    lines.push('', '  {gray-fg}No models currently loaded.{/gray-fg}');
+  }
+
+  lines.push(
+    '',
+    '  {bold}{cyan-fg}↵ Restart now{/cyan-fg}{/bold}  ·  {gray-fg}Esc Skip (apply on next start){/gray-fg}',
+    '',
+  );
+
+  if (modelPickerActive) return; // don't stack dialogs
+  modelPickerActive = true;
+
+  const box = blessed.box({
+    parent: screen,
+    top: 'center',
+    left: 'center',
+    width: '60%',
+    height: lines.length + 2,
+    border: { type: 'line' },
+    label: ' {bold}Restart Ollama?{/bold} ',
+    tags: true,
+    content: lines.join('\n'),
+    style: {
+      border: { fg: 'yellow' },
+      label: { fg: 'yellow', bold: true },
+    },
+  });
+
+  box.focus();
+  scheduleRender();
+
+  box.key('enter', async () => {
+    box.destroy();
+    modelPickerActive = false;
+    scheduleRender();
+
+    configRestartInProgress = true;
+    try {
+      log(`[${new Date().toISOString()}] Restarting Ollama…`);
+      const ok = await restartOllama();
+      setOllamaStatus(ok);
+      log(
+        ok
+          ? `[${new Date().toISOString()}] Ollama restarted with updated config`
+          : `[${new Date().toISOString()}] Ollama did not respond after restart`,
+      );
+    } finally {
+      configRestartInProgress = false;
+    }
+  });
+
+  box.key('escape', () => {
+    box.destroy();
+    modelPickerActive = false;
+    log(`[${new Date().toISOString()}] ${reason} — restart skipped, changes apply on next Ollama start`);
+    scheduleRender();
+  });
 }
 
 export function getOllamaEnv(): Record<string, string> {
@@ -338,6 +453,7 @@ export function addTokenUsage(promptTokens: number, completionTokens: number): v
   sessionCompletionTokens += completionTokens;
   sessionRequests++;
   recordTokPerSec();
+  pushEvent({ type: 'tokens', promptTokens, completionTokens });
   refreshUI();
 }
 
@@ -350,7 +466,12 @@ export function getTokenStats() {
   };
 }
 
+import { pushLog, pushEvent } from '../services/log-buffer';
+
 export function log(msg: string): void {
+  // Always push to the shared log buffer (for SSE / attach mode)
+  pushLog(msg);
+
   if (msg.includes('[ollama]')) {
     ollamaLogLines.push(msg);
     if (ollamaLogBox) {
@@ -412,10 +533,27 @@ const responseHistory: ResponseEntry[] = [];
 
 let rawResponseMode = false;
 
+function splitThinkContent(text: string): { thinking: string; content: string } {
+  const openIdx = text.indexOf('<think>');
+  if (openIdx === -1) return { thinking: '', content: text };
+  const closeIdx = text.indexOf('</think>', openIdx);
+  if (closeIdx === -1) {
+    // Still thinking (no close tag yet) — treat everything after <think> as thinking
+    return { thinking: text.slice(openIdx + 7).trim(), content: '' };
+  }
+  const thinking = text.slice(openIdx + 7, closeIdx).trim();
+  const content = (text.slice(0, openIdx) + text.slice(closeIdx + 8)).trim();
+  return { thinking, content };
+}
+
 function formatResponse(entry: ResponseEntry, truncate: boolean): string[] {
   if (rawResponseMode) {
     return [`{cyan-fg}${entry.ts}{/cyan-fg} {bold}${entry.model}{/bold}`, entry.rawJson, ''];
   }
+
+  const { thinking, content: mainContent } = isReasoningEnabled()
+    ? splitThinkContent(entry.response)
+    : { thinking: '', content: entry.response.replace(/<think>[\s\S]*?<\/think>/g, '').trim() };
 
   const displayPrompt = truncate
     ? entry.prompt.length > 80
@@ -424,21 +562,33 @@ function formatResponse(entry: ResponseEntry, truncate: boolean): string[] {
     : entry.prompt;
 
   const displayResp = truncate
-    ? (entry.response.length > MAX_RESPONSE_LEN
-        ? entry.response.slice(0, MAX_RESPONSE_LEN - 1) + '\u2026'
-        : entry.response
+    ? (mainContent.length > MAX_RESPONSE_LEN
+        ? mainContent.slice(0, MAX_RESPONSE_LEN - 1) + '\u2026'
+        : mainContent
       )
         .replace(/\n/g, ' ')
         .replace(/\s+/g, ' ')
         .trim()
-    : entry.response;
+    : mainContent;
 
-  return [
+  const lines = [
     `{cyan-fg}${entry.ts}{/cyan-fg} {bold}${entry.model}{/bold}`,
     `  {yellow-fg}Q:{/yellow-fg} ${displayPrompt}`,
-    `  {green-fg}A:{/green-fg} ${displayResp}`,
-    '',
   ];
+
+  if (thinking) {
+    const displayThink = truncate
+      ? thinking.length > 200
+        ? thinking.slice(0, 197) + '\u2026'
+        : thinking
+      : thinking;
+    lines.push(
+      `  {magenta-fg}Think:{/magenta-fg} {gray-fg}${displayThink.replace(/\n/g, ' ').replace(/\s+/g, ' ').trim()}{/gray-fg}`,
+    );
+  }
+
+  lines.push(`  {green-fg}A:{/green-fg} ${displayResp}`, '');
+  return lines;
 }
 
 export function toggleTruncation(): void {
@@ -491,14 +641,14 @@ export function showHelp(): void {
     '  {bold}{cyan-fg}ZEROLLAMA{/cyan-fg}{/bold} — Ollama middleware proxy with TUI dashboard',
     '',
     '  {bold}Ollama Control{/bold}',
-    '    {cyan-fg}s{/cyan-fg}   Start Ollama server',
-    '    {cyan-fg}x{/cyan-fg}   Stop Ollama (kills all processes)',
-    '    {cyan-fg}r{/cyan-fg}   Restart Ollama server',
-    '    {cyan-fg}u{/cyan-fg}   Update Ollama to latest release from GitHub',
+    '    {cyan-fg}s{/cyan-fg}   Start Ollama (if not already running)',
+    '    {cyan-fg}x{/cyan-fg}   Stop Ollama',
+    '    {cyan-fg}r{/cyan-fg}   Restart Ollama',
     '',
     '  {bold}Model Management{/bold}',
     '    {cyan-fg}m{/cyan-fg}   Open model picker — browse, install, delete, set default',
     '        {gray-fg}In picker: ↵ select, d delete, f favorite, + install, ⌕ HuggingFace{/gray-fg}',
+    '    {cyan-fg}l{/cyan-fg}   Running models — view loaded models, unload with d',
     '',
     '  {bold}Configuration{/bold}',
     '    {cyan-fg}c{/cyan-fg}   Edit Ollama config (env vars like context, GPU layers, KV cache)',
@@ -521,6 +671,9 @@ export function showHelp(): void {
     '    {cyan-fg}{{/cyan-fg}/{cyan-fg}}{/cyan-fg} Shrink/grow middle logs pane',
     '',
     '  {bold}Other{/bold}',
+    '    {cyan-fg}S{/cyan-fg}   Session picker — browse, switch, delete, rename, clear',
+    '        {gray-fg}In picker: ↵ select, + new, d delete, c clear, r rename{/gray-fg}',
+    '    {cyan-fg}N{/cyan-fg}   New chat session (quick-create)',
     '    {cyan-fg}h{/cyan-fg}   Show this help',
     '    {cyan-fg}q{/cyan-fg}   Quit Zerollama',
     '',
@@ -568,26 +721,325 @@ export function showHelp(): void {
 
 let updateInProgress = false;
 
-export async function runUpdateOllama(): Promise<void> {
-  if (updateInProgress) {
-    log('Update already in progress');
-    return;
-  }
-  updateInProgress = true;
-  try {
-    const ok = await updateOllama((msg) => {
-      log(`[update] ${msg}`);
-    });
-    setOllamaStatus(ok);
-  } finally {
-    updateInProgress = false;
-  }
-}
-
 export function toggleWebSearch(): void {
   const enabled = toggleWebSearchEnabled();
   log(`[${new Date().toISOString()}] Web search: ${enabled ? 'enabled' : 'disabled'}`);
   refreshUI();
+}
+
+export function toggleReasoning(): void {
+  const enabled = toggleReasoningEnabled();
+  log(`[${new Date().toISOString()}] Reasoning: ${enabled ? 'enabled' : 'disabled'}`);
+  refreshUI();
+}
+
+// ─── Session management UI ────────────────────────────────────────────────
+import {
+  listSessions,
+  createSession,
+  deleteSession,
+  getActiveSessionId,
+  setActiveSession,
+  getOrCreateActiveSession,
+  clearSessionMessages,
+  renameSession,
+} from '../services/sessions';
+
+export function showSessionPicker(): void {
+  if (modelPickerActive) return;
+  modelPickerActive = true;
+
+  const sessions = listSessions();
+  const activeId = getActiveSessionId();
+
+  if (sessions.length === 0) {
+    const s = createSession();
+    if (s) log(`[${new Date().toISOString()}] Created session: ${s.name}`);
+    modelPickerActive = false;
+    refreshUI();
+    return;
+  }
+
+  let selected = Math.max(
+    0,
+    sessions.findIndex((s) => s.id === activeId),
+  );
+
+  function buildContent(): string {
+    const lines = [
+      '',
+      '  {gray-fg}↑/↓ navigate  ↵ select  + new  d delete  c clear  r rename  Esc close{/gray-fg}',
+      '',
+    ];
+    for (let i = 0; i < sessions.length; i++) {
+      const s = sessions[i];
+      const isActive = s.id === activeId;
+      const cursor = i === selected ? '{cyan-fg}▸{/cyan-fg}' : ' ';
+      const tag = isActive ? ' {green-fg}●{/green-fg}' : '';
+      const msgCount = `{gray-fg}(${s.messageCount} msgs){/gray-fg}`;
+      const name = i === selected ? `{bold}${s.name}{/bold}` : s.name;
+      lines.push(`  ${cursor} ${name}  ${msgCount}${tag}`);
+    }
+    lines.push('', `  {gray-fg}${sessions.length} session(s){/gray-fg}`);
+    return lines.join('\n');
+  }
+
+  const box = blessed.box({
+    parent: screen,
+    top: 'center',
+    left: 'center',
+    width: '60%',
+    height: Math.min(sessions.length + 8, 25),
+    border: { type: 'line' },
+    label: ' {bold}Sessions{/bold}  {gray-fg}Esc to close{/gray-fg} ',
+    tags: true,
+    scrollable: true,
+    alwaysScroll: true,
+    keys: true,
+    vi: true,
+    mouse: true,
+    content: buildContent(),
+    style: { border: { fg: 'yellow' }, label: { fg: 'yellow', bold: true } },
+  });
+
+  box.focus();
+  scheduleRender();
+
+  const refresh = () => {
+    box.setContent(buildContent());
+    scheduleRender();
+  };
+
+  box.key(['up', 'k'], () => {
+    if (selected > 0) {
+      selected--;
+      refresh();
+    }
+  });
+
+  box.key(['down', 'j'], () => {
+    if (selected < sessions.length - 1) {
+      selected++;
+      refresh();
+    }
+  });
+
+  // Select / switch to session
+  box.key('enter', () => {
+    const s = sessions[selected];
+    if (s) {
+      setActiveSession(s.id);
+      log(`[${new Date().toISOString()}] Switched to session: ${s.name}`);
+    }
+    box.destroy();
+    modelPickerActive = false;
+    refreshDebugLabel();
+    refreshUI();
+  });
+
+  // New session
+  box.key('+', () => {
+    const s = createSession();
+    if (!s) return;
+    sessions.unshift({ id: s.id, name: s.name, createdAt: s.createdAt, updatedAt: s.updatedAt, messageCount: 0 });
+    selected = 0;
+    log(`[${new Date().toISOString()}] Created session: ${s.name}`);
+    refreshDebugLabel();
+    refresh();
+  });
+
+  // Delete session
+  box.key('d', () => {
+    const s = sessions[selected];
+    if (!s) return;
+    deleteSession(s.id);
+    sessions.splice(selected, 1);
+    if (selected >= sessions.length) selected = Math.max(0, sessions.length - 1);
+    log(`[${new Date().toISOString()}] Deleted session: ${s.name}`);
+    if (sessions.length === 0) {
+      box.destroy();
+      modelPickerActive = false;
+      refreshUI();
+      return;
+    }
+    refresh();
+  });
+
+  // Clear session messages
+  box.key('c', () => {
+    const s = sessions[selected];
+    if (!s) return;
+    clearSessionMessages(s.id);
+    s.messageCount = 0;
+    log(`[${new Date().toISOString()}] Cleared messages in: ${s.name}`);
+    refresh();
+  });
+
+  // Rename session
+  box.key('r', () => {
+    const s = sessions[selected];
+    if (!s) return;
+
+    const input = blessed.textbox({
+      parent: screen,
+      top: 'center',
+      left: 'center',
+      width: '50%',
+      height: 3,
+      border: { type: 'line' },
+      label: ' Rename session ',
+      tags: true,
+      inputOnFocus: true,
+      style: { border: { fg: 'yellow' }, focus: { border: { fg: 'cyan' } } },
+    });
+    input.setValue(s.name);
+    input.focus();
+    scheduleRender();
+
+    input.on('submit', (value: string) => {
+      const newName = (value || '').trim();
+      if (newName) {
+        renameSession(s.id, newName);
+        s.name = newName;
+        log(`[${new Date().toISOString()}] Renamed session to: ${newName}`);
+      }
+      input.destroy();
+      box.focus();
+      refresh();
+    });
+
+    input.on('cancel', () => {
+      input.destroy();
+      box.focus();
+      scheduleRender();
+    });
+
+    input.key('escape', () => {
+      input.destroy();
+      box.focus();
+      scheduleRender();
+    });
+  });
+
+  box.key(['escape', 'q'], () => {
+    box.destroy();
+    modelPickerActive = false;
+    scheduleRender();
+  });
+}
+
+export function newSession(): void {
+  const s = createSession();
+  if (s) log(`[${new Date().toISOString()}] New session: ${s.name}`);
+  refreshDebugLabel();
+  refreshUI();
+}
+
+// ─── Running models viewer (K9s-style: view and unload) ──────────────────
+export async function showRunningModels(): Promise<void> {
+  if (modelPickerActive) return;
+  modelPickerActive = true;
+
+  const models = await fetchRunningModels();
+
+  if (models.length === 0) {
+    log(`[${new Date().toISOString()}] No models currently loaded in Ollama`);
+    modelPickerActive = false;
+    return;
+  }
+
+  let selected = 0;
+
+  function buildContent(): string {
+    const lines = [
+      '',
+      '  {gray-fg}↑/↓ navigate  d unload model  Esc close{/gray-fg}',
+      '',
+    ];
+    for (let i = 0; i < models.length; i++) {
+      const m = models[i];
+      const cursor = i === selected ? '{cyan-fg}▸{/cyan-fg}' : ' ';
+      const name = i === selected ? `{bold}${m.name}{/bold}` : m.name;
+      const size = formatBytes(m.size);
+      const vram = m.sizeVram > 0 ? `  VRAM ${formatBytes(m.sizeVram)}` : '';
+      lines.push(`  ${cursor} {green-fg}●{/green-fg} ${name}  {gray-fg}${size}${vram}{/gray-fg}`);
+    }
+    lines.push('', `  {gray-fg}${models.length} model(s) loaded{/gray-fg}`);
+    return lines.join('\n');
+  }
+
+  const box = blessed.box({
+    parent: screen,
+    top: 'center',
+    left: 'center',
+    width: '60%',
+    height: Math.min(models.length + 8, 20),
+    border: { type: 'line' },
+    label: ' {bold}Running Models{/bold}  {gray-fg}Esc to close{/gray-fg} ',
+    tags: true,
+    scrollable: true,
+    alwaysScroll: true,
+    keys: true,
+    vi: true,
+    mouse: true,
+    content: buildContent(),
+    style: { border: { fg: 'green' }, label: { fg: 'green', bold: true } },
+  });
+
+  box.focus();
+  scheduleRender();
+
+  const refresh = () => {
+    box.setContent(buildContent());
+    scheduleRender();
+  };
+
+  box.key(['up', 'k'], () => {
+    if (selected > 0) { selected--; refresh(); }
+  });
+
+  box.key(['down', 'j'], () => {
+    if (selected < models.length - 1) { selected++; refresh(); }
+  });
+
+  // Unload model by setting keep_alive to 0
+  box.key('d', async () => {
+    const m = models[selected];
+    if (!m) return;
+
+    log(`[${new Date().toISOString()}] Unloading model: ${m.name}…`);
+    try {
+      const resp = await fetch(`${OLLAMA_URL}/api/generate`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model: m.name, keep_alive: 0 }),
+      });
+      if (resp.ok) {
+        log(`[${new Date().toISOString()}] ✓ Unloaded ${m.name}`);
+        models.splice(selected, 1);
+        if (selected >= models.length) selected = Math.max(0, models.length - 1);
+        if (models.length === 0) {
+          box.destroy();
+          modelPickerActive = false;
+          lastRunningModels = [];
+          refreshUI();
+          return;
+        }
+        lastRunningModels = [...models];
+        refresh();
+      } else {
+        log(`[${new Date().toISOString()}] Failed to unload ${m.name}: HTTP ${resp.status}`);
+      }
+    } catch (err: any) {
+      log(`[${new Date().toISOString()}] Error unloading ${m.name}: ${err.message}`);
+    }
+  });
+
+  box.key(['escape', 'q'], () => {
+    box.destroy();
+    modelPickerActive = false;
+    scheduleRender();
+  });
 }
 
 // ─── Keyboard-navigable history viewer ────────────────────────────────────
@@ -677,6 +1129,10 @@ export function logResponse(
   rawJson?: string,
 ): void {
   sessionResponseCount++;
+
+  // Emit structured event for attach-mode TUI
+  pushEvent({ type: 'response', model, prompt, response, rawJson: rawJson ?? '' });
+
   if (!responsesBox) return;
   const ts = new Date().toISOString().slice(11, 19);
   const entry: ResponseEntry = {
@@ -694,23 +1150,28 @@ export function logResponse(
   scheduleRender();
 }
 
-function getLocalIPs(): string[] {
-  return Object.values(os.networkInterfaces())
-    .flat()
-    .filter((iface) => iface?.family === 'IPv4' && !iface.internal)
-    .map((iface) => iface!.address);
+function getLocalAddrs(): string[] {
+  const ifaces = os.networkInterfaces();
+  const results: string[] = [];
+  for (const [name, addrs] of Object.entries(ifaces)) {
+    for (const iface of addrs ?? []) {
+      if (iface.family !== 'IPv4' || iface.internal) continue;
+      // Short label: en0→WiFi, en1→Eth, bridge/vmnet→VM, utun→VPN, else iface name
+      let tag = name;
+      if (/^en0$/.test(name)) tag = 'WiFi';
+      else if (/^en\d+$/.test(name)) tag = 'Eth';
+      else if (/^bridge|^vmnet/.test(name)) tag = 'VM';
+      else if (/^utun/.test(name)) tag = 'VPN';
+      results.push(`${tag} ${iface.address}:${PORT}`);
+    }
+  }
+  return results;
 }
 
 let bannerNetAddrs = '';
 
 function buildBannerContent(netAddrs?: string): string {
   if (netAddrs !== undefined) bannerNetAddrs = netAddrs;
-  const isDefault = selectedModel && selectedModel === defaultModel;
-  const modelTag = selectedModel
-    ? `{magenta-fg}${selectedModel}{/magenta-fg}${isDefault ? ' {yellow-fg}★{/yellow-fg}' : ''}`
-    : detectedModel
-      ? `{magenta-fg}${detectedModel}{/magenta-fg} {gray-fg}(auto){/gray-fg}`
-      : '{gray-fg}no model{/gray-fg}';
 
   const totalMem = os.totalmem();
   const freeMem = os.freemem();
@@ -721,74 +1182,157 @@ function buildBannerContent(netAddrs?: string): string {
   const color = pct > 85 ? 'red-fg' : pct > 60 ? 'yellow-fg' : 'green-fg';
   const ramTag = `{${color}}RAM ${usedGB}/${totalGB} GB (${pct}%){/${color}}`;
 
+  const total = sessionPromptTokens + sessionCompletionTokens;
+  const tokensTag = `Tok: ${total.toLocaleString()} (${sessionPromptTokens.toLocaleString()}↓ ${sessionCompletionTokens.toLocaleString()}↑)`;
+  const startLabel = sessionStartTime.toLocaleTimeString([], {
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+  const uptimeTag = `▲ ${startLabel} (${formatUptime()})`;
+
   return (
     ' {bold}{cyan-fg}ZEROLLAMA{/cyan-fg}{/bold}  ' +
-    `{gray-fg}│{/gray-fg}  ${bannerNetAddrs}  {gray-fg}│{/gray-fg}  ${modelTag}  {gray-fg}│{/gray-fg}  ${ramTag}`
+    `{gray-fg}│{/gray-fg}  ${bannerNetAddrs}  ` +
+    `{gray-fg}│{/gray-fg}  ${ramTag}  ` +
+    `{gray-fg}│{/gray-fg}  ${tokensTag}  ` +
+    `{gray-fg}│{/gray-fg}  ${uptimeTag}`
   );
 }
 
 export function trackRequest(): void {
   sessionConnections++;
+  pushEvent({ type: 'request' });
   refreshUI();
 }
 
 export function trackError(): void {
   sessionErrors++;
+  pushEvent({ type: 'error' });
   refreshUI();
 }
 
 export function trackResponse(): void {
   sessionResponseCount++;
+  pushEvent({ type: 'track_response' });
   refreshUI();
 }
 
 function buildInfoContent(): string {
   const webSearchTag = isWebSearchEnabled() ? '{green-fg}on{/green-fg}' : '{red-fg}off{/red-fg}';
-  const gpuLines: string[] = [];
+  const reasoningTag = isReasoningEnabled() ? '{green-fg}on{/green-fg}' : '{red-fg}off{/red-fg}';
+  const tokGraph = buildTokGraph();
+  const loadAvg = os.loadavg()[0].toFixed(2);
+
+  const lines: string[] = [
+    '',
+    `  {gray-fg}${os.hostname()}{/gray-fg}  CPU {bold}${os.cpus().length}{/bold}  Load {bold}${loadAvg}{/bold}`,
+  ];
+
+  // GPU
   if (lastGpuInfo.length > 0) {
-    gpuLines.push('', '  {bold}GPU{/bold}');
+    lines.push('', '  {bold}GPU{/bold}');
     for (const g of lastGpuInfo) {
       const col = g.utilPct > 80 ? 'red-fg' : g.utilPct > 50 ? 'yellow-fg' : 'green-fg';
-      gpuLines.push(
+      lines.push(
         `    {${col}}${g.utilPct}%{/${col}}  ${g.memUsedMb}/${g.memTotalMb} MB  {gray-fg}${g.name.slice(0, 18)}{/gray-fg}`,
       );
     }
   }
 
-  const tokGraph = buildTokGraph();
-  const uptimeLine = `    Uptime  {bold}${uptimePct()}%{/bold}  {gray-fg}(${healthHistory.length} polls){/gray-fg}`;
+  // Running models (from /api/ps)
+  if (lastRunningModels.length > 0) {
+    lines.push('', '  {bold}Running Models{/bold}');
+    for (const m of lastRunningModels) {
+      const name = m.name.length > 22 ? m.name.slice(0, 20) + '…' : m.name;
+      const vram = m.sizeVram > 0 ? `  {cyan-fg}${formatBytes(m.sizeVram)}{/cyan-fg}` : '';
+      lines.push(`    {green-fg}●{/green-fg} ${name}${vram}`);
+    }
+  }
 
-  const lines: string[] = [
+  lines.push(
+    '',
+    '  {bold}Session{/bold}',
+    `    Responses  {bold}${sessionResponseCount}{/bold}  Errors {bold}${sessionErrors}{/bold}`,
+    `    Tok/s   ${tokGraph}`,
+    `    Health  {bold}${uptimePct()}%{/bold}  {gray-fg}(${healthHistory.length} polls){/gray-fg}`,
+    `    WebSearch  ${webSearchTag}  {gray-fg}(i){/gray-fg}`,
+    `    Reasoning  ${reasoningTag}  {gray-fg}(n){/gray-fg}`,
+  );
+
+  // Queue
+  const qs = queueStats();
+  if (qs.totalEnqueued > 0 || qs.queued > 0) {
+    lines.push(
+      '',
+      '  {bold}Queue{/bold}',
+      `    Active     {bold}${qs.active}{/bold}/${qs.maxConcurrent}`,
+      `    Waiting    {bold}${qs.queued}{/bold}/${qs.maxSize}`,
+      `    Done       ${qs.totalCompleted}  Drop ${qs.totalDropped}`,
+    );
+  }
+
+  // Cache
+  const cs = cacheStats();
+  if (cs.size > 0 || cs.hits > 0) {
+    lines.push(
+      '',
+      '  {bold}Cache{/bold}',
+      `    Entries    {bold}${cs.size}{/bold}/${cs.maxSize}`,
+      `    Hits       {bold}${cs.hits}{/bold}`,
+      `    TTL        ${cs.ttlSeconds}s`,
+    );
+  }
+
+  // RAG
+  const rs = ragStats();
+  if (rs.indexed) {
+    lines.push(
+      '',
+      '  {bold}RAG{/bold}',
+      `    Chunks     {bold}${rs.chunks}{/bold}`,
+      `    Dirs       ${rs.directories.length}`,
+    );
+  }
+
+  // ─── Ollama Config (details not in bottom bar) ──────────────────────────
+  const presetTag = activePresetName
+    ? `  {green-fg}${activePresetName}{/green-fg}`
+    : '  {gray-fg}none{/gray-fg}';
+  lines.push(
+    '',
+    `  {bold}Ollama Config{/bold}  {gray-fg}c{/gray-fg}`,
+    `    Preset   ${presetTag}  {gray-fg}(p){/gray-fg}`,
+    `    FlashAttn  {cyan-fg}${(ollamaConfig.flashAttention === '1' ? 'on' : 'off').padEnd(5)}{/cyan-fg} Models    {cyan-fg}${ollamaConfig.maxLoadedModels}{/cyan-fg}`,
+    `    KeepAlive  {cyan-fg}${ollamaConfig.keepAlive.padEnd(5)}{/cyan-fg} Timeout   {cyan-fg}${ollamaConfig.loadTimeout}{/cyan-fg}`,
+    `    KVCache   {cyan-fg}${(ollamaConfig.kvCacheType || 'f16').padEnd(5)}{/cyan-fg} MaxQueue  {cyan-fg}${ollamaConfig.maxQueue}{/cyan-fg}`,
+    `    Debug     {cyan-fg}${(ollamaConfig.debug === '1' ? 'on' : 'off').padEnd(5)}{/cyan-fg}`,
+  );
+
+  // Backends
+  if (isMultiBackend()) {
+    lines.push('', '  {bold}Backends{/bold}');
+    for (const b of backendStats()) {
+      const tag = b.healthy ? '{green-fg}●{/green-fg}' : '{red-fg}●{/red-fg}';
+      lines.push(
+        `    ${tag} ${b.url.replace(/^https?:\/\//, '').slice(0, 22)}  act=${b.activeRequests}  ${b.lastLatencyMs}ms`,
+      );
+    }
+  }
+
+  // Commands
+  lines.push(
     '',
     '  {bold}Commands{/bold}  {gray-fg}h help{/gray-fg}',
-    ...gpuLines,
     '    {cyan-fg}s{/cyan-fg} start    {cyan-fg}x{/cyan-fg} stop',
     '    {cyan-fg}r{/cyan-fg} restart  {cyan-fg}c{/cyan-fg} config',
     '    {cyan-fg}d{/cyan-fg} debug    {cyan-fg}m{/cyan-fg} model',
-    '    {cyan-fg}e{/cyan-fg} api      {cyan-fg}b{/cyan-fg} bench',
-    '    {cyan-fg}w{/cyan-fg} wrap     {cyan-fg}u{/cyan-fg} update',
+    '    {cyan-fg}l{/cyan-fg} loaded   {cyan-fg}b{/cyan-fg} bench',
+    '    {cyan-fg}e{/cyan-fg} api      {cyan-fg}w{/cyan-fg} wrap',
     '    {cyan-fg}t{/cyan-fg} trunc    {cyan-fg}R{/cyan-fg} raw',
-    '    {cyan-fg}i{/cyan-fg} internet {cyan-fg}h{/cyan-fg} help',
-    '    {cyan-fg}H{/cyan-fg} history  {cyan-fg}q{/cyan-fg} quit',
-    '',
-    '  {bold}Ollama Config{/bold}  {gray-fg}c{/gray-fg}',
-    `    Models     {cyan-fg}${ollamaConfig.maxLoadedModels.padEnd(5)}{/cyan-fg} Parallel  {cyan-fg}${ollamaConfig.numParallel}{/cyan-fg}`,
-    `    FlashAttn  {cyan-fg}${(ollamaConfig.flashAttention === '1' ? 'on' : 'off').padEnd(5)}{/cyan-fg} GPU       {cyan-fg}${ollamaConfig.numGpu}{/cyan-fg}`,
-    `    KeepAlive  {cyan-fg}${ollamaConfig.keepAlive.padEnd(5)}{/cyan-fg} Timeout   {cyan-fg}${ollamaConfig.loadTimeout}{/cyan-fg}`,
-    `    Context    {cyan-fg}${(ollamaConfig.contextLength || 'auto').padEnd(5)}{/cyan-fg} KVCache   {cyan-fg}${ollamaConfig.kvCacheType || 'f16'}{/cyan-fg}`,
-    `    MaxQueue   {cyan-fg}${ollamaConfig.maxQueue.padEnd(5)}{/cyan-fg} Debug     {cyan-fg}${ollamaConfig.debug === '1' ? 'on' : 'off'}{/cyan-fg}`,
-    `    WebSearch  ${webSearchTag}  {gray-fg}(i toggle){/gray-fg}`,
-    '',
-    '  {bold}Session{/bold}',
-    `    Requests   {bold}${sessionConnections}{/bold}`,
-    `    Responses  {bold}${sessionResponseCount}{/bold}`,
-    `    Errors     {bold}${sessionErrors}{/bold}`,
-    `    Tokens     {bold}${(sessionPromptTokens + sessionCompletionTokens).toLocaleString()}{/bold}`,
-    `      in       ${sessionPromptTokens.toLocaleString()}`,
-    `      out      ${sessionCompletionTokens.toLocaleString()}`,
-    `    Tok/s   ${tokGraph}`,
-    uptimeLine,
-  ];
+    '    {cyan-fg}H{/cyan-fg} history  {cyan-fg}S{/cyan-fg} sessions',
+    '    {cyan-fg}N{/cyan-fg} new chat {cyan-fg}q{/cyan-fg} quit',
+  );
+
   return lines.join('\n');
 }
 
@@ -819,14 +1363,18 @@ function updateStatusLine(): void {
   const ollamaLabel = ollamaStatus
     ? '{green-fg}● reachable{/green-fg}'
     : '{red-fg}● unreachable{/red-fg}';
-  const total = sessionPromptTokens + sessionCompletionTokens;
-  const tokensLabel = `Tokens: ${total.toLocaleString()} (${sessionPromptTokens.toLocaleString()} in / ${sessionCompletionTokens.toLocaleString()} out) | Reqs: ${sessionRequests}`;
-  const startLabel = sessionStartTime.toLocaleTimeString([], {
-    hour: '2-digit',
-    minute: '2-digit',
-  });
+
+  const isDefault = selectedModel && selectedModel === defaultModel;
+  const modelTag = selectedModel
+    ? `{magenta-fg}${selectedModel}{/magenta-fg}${isDefault ? ' {yellow-fg}★{/yellow-fg}' : ''}`
+    : detectedModel
+      ? `{magenta-fg}${detectedModel}{/magenta-fg} {gray-fg}(auto){/gray-fg}`
+      : '{gray-fg}no model{/gray-fg}';
+
+  const reqs = `Reqs: ${sessionRequests}`;
+
   statusLine.setContent(
-    ` ${OLLAMA_URL}:${PORT}  ${ollamaLabel}  │  ${tokensLabel}  │  ▲ ${startLabel} (${formatUptime()})`,
+    ` ${OLLAMA_URL}  ${ollamaLabel}  │  ${modelTag}  │  ${reqs}  │  ctx=${ollamaConfig.contextLength || 'auto'}  gpu=${ollamaConfig.numGpu}  parallel=${ollamaConfig.numParallel}`,
   );
 }
 
@@ -849,8 +1397,8 @@ export function createDashboard(onQuit: () => void): void {
   });
 
   // ─── Top banner ───────────────────────────────────────────────────────────
-  const localIPs = getLocalIPs();
-  const netAddrs = localIPs.map((ip) => `http://${ip}:${PORT}`).join('  │  ');
+  const localAddrs = getLocalAddrs();
+  const netAddrs = localAddrs.join('  │  ');
   bannerBox = blessed.box({
     parent: screen,
     top: 0,
@@ -884,12 +1432,12 @@ export function createDashboard(onQuit: () => void): void {
   // ─── Debug chat (hidden by default) ───────────────────────────────────────
   debugBox = blessed.log({
     parent: screen,
-    top: '40%',
+    top: '30%',
     left: 0,
     width: '25%',
-    height: '60%-4',
+    height: '70%-4',
     border: { type: 'line' },
-    label: ' {bold}Debug Chat{/bold} ',
+    label: ' {bold}Debug Chat{/bold}  {gray-fg}:q quit  :s sessions  :n new{/gray-fg} ',
     tags: true,
     scrollable: true,
     alwaysScroll: true,
@@ -937,6 +1485,15 @@ export function createDashboard(onQuit: () => void): void {
     }
     if (trimmed === ':q') {
       toggleDebug();
+      return;
+    }
+    if (trimmed === ':s') {
+      showSessionPicker();
+      return;
+    }
+    if (trimmed === ':n') {
+      newSession();
+      debugInput.readInput();
       return;
     }
     // Run query then always re-enable input
@@ -1063,21 +1620,16 @@ export function startStatusMonitor(initialStatus: boolean): NodeJS.Timeout {
     recordHealth(reachable);
     recordTokPerSec();
     lastGpuInfo = pollGpu();
+    if (reachable) lastRunningModels = await fetchRunningModels();
+    else lastRunningModels = [];
+    if (isMultiBackend()) void healthCheckAll();
 
-    // ── Watchdog: auto-restart if Ollama goes down ───────────────────────
+    // ── Watchdog: warn if Ollama goes down (don't auto-restart) ────────
     if (!reachable && lastStatus) {
       watchdogRestartCount++;
       log(
-        `[${new Date().toISOString()}] Ollama went unreachable — watchdog restarting (attempt ${watchdogRestartCount})…`,
+        `[${new Date().toISOString()}] ⚠ Ollama went unreachable — press {bold}s{/bold} to start or {bold}r{/bold} to restart`,
       );
-      void restartOllama().then((ok) => {
-        setOllamaStatus(ok);
-        log(
-          ok
-            ? `[${new Date().toISOString()}] Watchdog restarted Ollama successfully`
-            : `[${new Date().toISOString()}] Watchdog restart failed`,
-        );
-      });
     }
 
     if (reachable !== lastStatus) {
@@ -1121,12 +1673,13 @@ export function toggleDebug(): void {
     // Enable Ollama debug logging
     setOllamaConfig({ debug: '1' });
     log(`[${new Date().toISOString()}] Debug mode ON — OLLAMA_DEBUG=1`);
-    infoBox.height = '40%-3';
+    infoBox.height = '30%-3';
     debugBox.show();
     debugInput.show();
+    refreshDebugLabel();
     scheduleRender();
     debugInput.readInput();
-    void restartOllamaAfterConfigChange('Debug mode enabled');
+    void confirmOllamaRestart('Debug mode enabled');
   } else {
     setOllamaConfig({ debug: '0' });
     log(`[${new Date().toISOString()}] Debug mode OFF — OLLAMA_DEBUG=0`);
@@ -1137,7 +1690,7 @@ export function toggleDebug(): void {
     debugInput.cancel();
     screen.realloc();
     scheduleRender();
-    void restartOllamaAfterConfigChange('Debug mode disabled');
+    void confirmOllamaRestart('Debug mode disabled');
   }
 }
 
@@ -1147,6 +1700,26 @@ export function isDebugFocused(): boolean {
 
 export function isDebugVisible(): boolean {
   return debugVisible;
+}
+
+/** Update the debug chat label to show active session info + :q hint */
+export function refreshDebugLabel(): void {
+  if (!debugBox) return;
+  try {
+    const activeId = getActiveSessionId();
+    if (activeId) {
+      const sessions = listSessions();
+      const active = sessions.find((s) => s.id === activeId);
+      if (active) {
+        const name = active.name.length > 20 ? active.name.slice(0, 18) + '…' : active.name;
+        debugBox.setLabel(
+          ` {bold}Debug Chat{/bold}  {yellow-fg}${name}{/yellow-fg} (${active.messageCount} msgs)  {gray-fg}:q quit  :s sessions  :n new{/gray-fg} `,
+        );
+        return;
+      }
+    }
+  } catch { /* safe */ }
+  debugBox.setLabel(' {bold}Debug Chat{/bold}  {gray-fg}:q quit  :s sessions  :n new{/gray-fg} ');
 }
 
 export function isModelPickerActive(): boolean {
@@ -1189,7 +1762,22 @@ export async function showModelPicker(): Promise<void> {
   if (modelPickerActive) return;
   modelPickerActive = true;
 
+  // Show loading indicator while fetching models
+  const loadingBox = blessed.box({
+    parent: screen,
+    top: 'center',
+    left: 'center',
+    width: 30,
+    height: 3,
+    border: { type: 'line' },
+    tags: true,
+    content: ' {cyan-fg}Loading models…{/cyan-fg}',
+    style: { border: { fg: 'magenta' } },
+  });
+  scheduleRender();
+
   const models = await fetchModels();
+  loadingBox.destroy();
   const items = [
     ...models.map((m) => {
       const sel = m.name === selectedModel ? '{green-fg}● {/green-fg}' : '  ';
@@ -2150,6 +2738,7 @@ const CONFIG_FIELDS: ConfigField[] = [
 
 interface ConfigPreset {
   name: string;
+  short: string;
   desc: string;
   platform: 'apple' | 'nvidia' | 'any';
   config: Partial<OllamaConfig>;
@@ -2177,6 +2766,7 @@ const detectedPlatform = detectPlatform();
 const CONFIG_PRESETS: ConfigPreset[] = [
   {
     name: 'Apple Silicon M4 Pro 48GB',
+    short: 'M4 Pro 48G',
     desc: 'Optimized for M4 Pro with 48GB unified memory',
     platform: 'apple',
     config: {
@@ -2197,6 +2787,7 @@ const CONFIG_PRESETS: ConfigPreset[] = [
   },
   {
     name: 'Apple Silicon M4 Pro 24GB',
+    short: 'M4 Pro 24G',
     desc: 'Balanced for M4 Pro with 24GB unified memory',
     platform: 'apple',
     config: {
@@ -2217,6 +2808,7 @@ const CONFIG_PRESETS: ConfigPreset[] = [
   },
   {
     name: 'NVIDIA RTX 5090 (32GB)',
+    short: 'RTX 5090',
     desc: 'Max performance for RTX 5090 32GB VRAM',
     platform: 'nvidia',
     config: {
@@ -2237,6 +2829,7 @@ const CONFIG_PRESETS: ConfigPreset[] = [
   },
   {
     name: 'NVIDIA RTX 5070 (12GB)',
+    short: 'RTX 5070',
     desc: 'Balanced for RTX 5070 12GB VRAM',
     platform: 'nvidia',
     config: {
@@ -2257,6 +2850,7 @@ const CONFIG_PRESETS: ConfigPreset[] = [
   },
   {
     name: 'NVIDIA RTX 3070 (8GB)',
+    short: 'RTX 3070',
     desc: 'Conservative for RTX 3070 8GB VRAM',
     platform: 'nvidia',
     config: {
@@ -2277,6 +2871,7 @@ const CONFIG_PRESETS: ConfigPreset[] = [
   },
   {
     name: 'Low Memory (8-16GB)',
+    short: 'Low Mem',
     desc: 'Conservative settings for limited memory',
     platform: 'any',
     config: {
@@ -2297,6 +2892,7 @@ const CONFIG_PRESETS: ConfigPreset[] = [
   },
   {
     name: 'Server / Multi-user',
+    short: 'Server',
     desc: 'High throughput for multiple concurrent users',
     platform: 'any',
     config: {
@@ -2316,6 +2912,12 @@ const CONFIG_PRESETS: ConfigPreset[] = [
     },
   },
 ];
+
+// Resolve activePresetName to short display name (settings stores full name)
+if (activePresetName) {
+  const match = CONFIG_PRESETS.find((p) => p.name === activePresetName);
+  if (match) activePresetName = match.short;
+}
 
 export function showConfigEditor(): void {
   if (modelPickerActive) return;
@@ -2388,6 +2990,8 @@ export function showConfigEditor(): void {
 }
 
 function showPresetPicker(): void {
+  if (modelPickerActive) return;
+  modelPickerActive = true;
   const items = CONFIG_PRESETS.map((p) => {
     const compatible = p.platform === 'any' || p.platform === detectedPlatform;
     if (compatible) {
@@ -2439,10 +3043,12 @@ function showPresetPicker(): void {
     }
     list.destroy();
     setOllamaConfig(preset.config);
+    activePresetName = preset.short;
+    writeRuntimeSettings({ activePreset: preset.name });
     log(`[${new Date().toISOString()}] Preset applied: ${preset.name}`);
     modelPickerActive = false;
     refreshUI();
-    void restartOllamaAfterConfigChange(`Preset applied: ${preset.name}`);
+    void confirmOllamaRestart(`Preset applied: ${preset.name}`);
   };
 
   list.key(['enter', 'return'], () => {
@@ -2459,6 +3065,8 @@ function showPresetPicker(): void {
     scheduleRender();
   });
 }
+
+export { showPresetPicker };
 
 function editConfigField(field: ConfigField): void {
   const cfg = getOllamaConfig();
@@ -2488,8 +3096,10 @@ function editConfigField(field: ConfigField): void {
     const val = (value ?? '').trim();
     if (val) {
       setOllamaConfig({ [field.key]: val });
+      activePresetName = null;
+      writeRuntimeSettings({ activePreset: undefined });
       log(`[${new Date().toISOString()}] Config: ${field.label} = ${val}`);
-      void restartOllamaAfterConfigChange(`Config updated: ${field.label}`);
+      void confirmOllamaRestart(`Config updated: ${field.label}`);
     }
     modelPickerActive = false;
     scheduleRender();
@@ -2819,9 +3429,10 @@ interface Endpoint {
 }
 
 function getEndpoints(): Endpoint[] {
-  const ips = getLocalIPs();
-  const host = ips.length > 0 ? ips[0] : 'localhost';
-  const base = `http://${host}:${PORT}`;
+  const addrs = getLocalAddrs();
+  // Extract just the IP from "WiFi 192.168.1.5:3001" → "192.168.1.5"
+  const firstAddr = addrs.length > 0 ? addrs[0].split(' ')[1]?.split(':')[0] ?? 'localhost' : 'localhost';
+  const base = `http://${firstAddr}:${PORT}`;
   return [
     {
       method: 'GET',
@@ -2864,24 +3475,6 @@ function getEndpoints(): Endpoint[] {
       path: '/api/models/:name',
       desc: 'Delete a model',
       curl: `curl -X DELETE ${base}/api/models/llama3`,
-    },
-    {
-      method: 'POST',
-      path: '/api/ollama/start',
-      desc: 'Start Ollama',
-      curl: `curl -X POST ${base}/api/ollama/start`,
-    },
-    {
-      method: 'POST',
-      path: '/api/ollama/stop',
-      desc: 'Stop Ollama',
-      curl: `curl -X POST ${base}/api/ollama/stop`,
-    },
-    {
-      method: 'POST',
-      path: '/api/ollama/restart',
-      desc: 'Restart Ollama',
-      curl: `curl -X POST ${base}/api/ollama/restart`,
     },
   ];
 }

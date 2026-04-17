@@ -1,9 +1,25 @@
 import { Router, Request, Response } from 'express';
 import rateLimit from 'express-rate-limit';
-import { OLLAMA_URL, WEB_SEARCH_MAX_RESULTS, isWebSearchEnabled } from '../config';
+import {
+  OLLAMA_URL,
+  WEB_SEARCH_MAX_RESULTS,
+  isWebSearchEnabled,
+  isReasoningEnabled,
+} from '../config';
 import { searchWeb } from '../services/web-search';
 import { log, addTokenUsage, logResponse } from '../startup/dashboard';
 import { fireWebhook } from '../services/webhook';
+import { cacheKey, cacheGet, cacheSet, isCacheEnabled } from '../services/prompt-cache';
+import { enqueue } from '../services/request-queue';
+import { routedOllamaFetch } from '../services/backend-router';
+import { buildRagContext, isRagEnabled } from '../services/rag';
+import {
+  getOrCreateActiveSession,
+  getSession,
+  appendMessages,
+  autoNameSession,
+  ChatMessage,
+} from '../services/sessions';
 
 const router = Router();
 
@@ -122,7 +138,7 @@ function buildAssistantToolMessage(message: any): any {
 }
 
 async function requestOllamaChat(payload: Record<string, any>, signal: AbortSignal): Promise<any> {
-  const upstream = await fetch(`${OLLAMA_URL}/api/chat`, {
+  const upstream = await routedOllamaFetch('/api/chat', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
@@ -145,10 +161,17 @@ function getLastUserMessage(messages: any[]): string {
   return String(last?.content ?? '').trim();
 }
 
+function userExplicitlyAsksForSearch(text: string): boolean {
+  const t = text.toLowerCase();
+  return /(search\s+(the\s+)?(web|internet|online|google|bing|duckduckgo)|look\s*(it)?\s*up\s*(online|on the web|on the internet)?|find\s+(online|on the web|on the internet)|go\s+online|browse\s+the\s+(web|internet)|google\s+(it|this|that|for)|search\s+for\s+it|web\s+search|internet\s+search)/.test(
+    t,
+  );
+}
+
 function looksLikeWebQuery(text: string): boolean {
   const t = text.toLowerCase();
   return (
-    /(search|web|internet|latest|recent|current|news|today|lookup|find|release|update|version|weather|forecast|temperature|stock|price|score|live|real-time|what is|who is|when is|where is)/.test(
+    /(search|web|internet|latest|recent|current|news|today|lookup|find|release|update|version|weather|forecast|temperature|stock|price|score|live|real-time|what is|who is|when is|where is|how much|how many)/.test(
       t,
     ) || t.includes('?')
   );
@@ -161,7 +184,7 @@ function indicatesNoInternetAccess(text: string): boolean {
 
 function indicatesNoFind(text: string): boolean {
   const t = text.toLowerCase();
-  return /(unable to find|could not find|couldn't find|can't find|no information|not enough information|information provided|i do not know|i don't know|unknown)/.test(
+  return /(unable to find|could not find|couldn't find|can't find|no information|not enough information|information provided|i do not know|i don't know|unknown|i'm not sure|i am not sure|i lack|don't have.*information|do not have.*information|my (training|knowledge).*cut[- ]?off|as of my|my training data|i was trained|not aware of|no knowledge of|beyond my|outside my)/.test(
     t,
   );
 }
@@ -207,59 +230,27 @@ async function executeToolCall(toolCall: any): Promise<string> {
 
 async function runChatWithTools(body: Record<string, any>, signal: AbortSignal): Promise<any> {
   let messages = Array.isArray(body.messages) ? [...body.messages] : [];
-  const tools = mergeTools(body.tools);
-  let firstData: any | null = null;
   const originalMessages = Array.isArray(body.messages) ? [...body.messages] : [];
+  const lastUserMessage = getLastUserMessage(originalMessages);
 
-  const fallbackWithContext = async () => {
-    const lastUserMessage = getLastUserMessage(originalMessages);
-    const results = await searchWeb(lastUserMessage, WEB_SEARCH_MAX_RESULTS);
-    if (results.length === 0) {
-      log(`[${new Date().toISOString()}] Chat fallback: web_search returned 0 results`);
-      return firstData;
-    }
-
-    const context = [
-      `Web search results for: ${lastUserMessage}`,
-      ...results.map(
-        (r, i) => `${i + 1}. ${r.title}\nURL: ${r.url}\nSnippet: ${r.snippet || '(no snippet)'}`,
-      ),
-    ].join('\n\n');
-
-    return await requestOllamaChat(
-      {
-        ...body,
-        stream: false,
-        messages: [
-          ...originalMessages,
-          {
-            role: 'system',
-            content:
-              'Use the provided web_search_context to answer. Cite URLs when helpful. If context is insufficient, say what is missing.',
-          },
-          {
-            role: 'system',
-            content: `web_search_context:\n${context}`,
-          },
-        ],
-      },
-      signal,
-    );
-  };
+  // ── Step 1: Ask AI directly ──────────────────────────────────────────
+  let firstData: any | null = null;
+  const tools = mergeTools(body.tools);
 
   for (let round = 0; round < 4; round++) {
     let data: any;
     try {
       data = await requestOllamaChat({ ...body, stream: false, messages, tools }, signal);
     } catch (err) {
-      if ((err as any)?.status === 400 && round > 0 && isWebSearchEnabled()) {
-        log(
-          `[${new Date().toISOString()}] Chat tool-history rejected by Ollama; switching to web_search_context fallback`,
-        );
-        return await fallbackWithContext();
+      if ((err as any)?.status === 400) {
+        log(`[${new Date().toISOString()}] Chat: Ollama 400, retrying without tools`);
+        data = await requestOllamaChat({ ...body, stream: false, messages }, signal);
+      } else {
+        throw err;
       }
-      throw err;
     }
+
+    // Handle inline tool calls (e.g. <function=web_search>)
     const inlineTool = extractInlineToolCall(data.message?.content);
     if (inlineTool.toolCall) {
       data.message = {
@@ -267,9 +258,6 @@ async function runChatWithTools(body: Record<string, any>, signal: AbortSignal):
         content: inlineTool.cleanedContent,
         tool_calls: [inlineTool.toolCall],
       };
-      log(
-        `[${new Date().toISOString()}] Parsed inline tool call: ${inlineTool.toolCall.function.name}`,
-      );
     }
 
     const toolCalls = data.message?.tool_calls;
@@ -281,11 +269,7 @@ async function runChatWithTools(body: Record<string, any>, signal: AbortSignal):
     messages = [...messages, buildAssistantToolMessage(data.message)];
     for (const toolCall of toolCalls) {
       const toolResult = await executeToolCall(toolCall);
-      messages.push({
-        role: 'tool',
-        tool_name: toolCall?.function?.name,
-        content: toolResult,
-      });
+      messages.push({ role: 'tool', tool_name: toolCall?.function?.name, content: toolResult });
     }
   }
 
@@ -293,47 +277,59 @@ async function runChatWithTools(body: Record<string, any>, signal: AbortSignal):
     throw new Error('Tool execution exceeded maximum rounds');
   }
 
-  // Fallback path for models that ignore tool-calling but ask for internet limits.
-  // In this case we proactively run a search and give concise results as context.
-  const candidateAnswer = String(firstData?.message?.content ?? '');
-  const lastUserMessage = getLastUserMessage(originalMessages);
+  // ── Step 2: Check if AI failed to answer ─────────────────────────────
+  if (!isWebSearchEnabled()) return firstData;
 
-  if (isWebSearchEnabled() && looksLikeWebQuery(lastUserMessage)) {
-    const shouldFallback =
-      indicatesNoInternetAccess(candidateAnswer) ||
-      indicatesNoFind(candidateAnswer) ||
-      indicatesPrivacyRefusal(candidateAnswer) ||
-      indicatesNoRealtimeDataAccess(candidateAnswer) ||
-      indicatesWebDeflection(candidateAnswer);
-    if (!shouldFallback) {
-      return firstData;
-    }
+  const answer = String(firstData?.message?.content ?? '');
+  const aiFailed =
+    userExplicitlyAsksForSearch(lastUserMessage) ||
+    indicatesNoInternetAccess(answer) ||
+    indicatesNoFind(answer) ||
+    indicatesNoRealtimeDataAccess(answer) ||
+    indicatesWebDeflection(answer) ||
+    indicatesPrivacyRefusal(answer);
 
-    log(
-      `[${new Date().toISOString()}] Chat fallback: injecting web_search_context for query "${lastUserMessage.slice(0, 120)}"`,
-    );
+  if (!aiFailed) return firstData;
 
-    return await fallbackWithContext();
+  // ── Step 3: Web search ───────────────────────────────────────────────
+  log(
+    `[${new Date().toISOString()}] AI failed → searching web for "${lastUserMessage.slice(0, 100)}"`,
+  );
+  const results = await searchWeb(lastUserMessage, WEB_SEARCH_MAX_RESULTS);
+  if (results.length === 0) {
+    log(`[${new Date().toISOString()}] Web search returned 0 results, returning original answer`);
+    return firstData;
   }
 
-  // Some models refuse without explicit query markers (for example: "no access to real-time data").
-  if (
-    isWebSearchEnabled() &&
-    (indicatesNoRealtimeDataAccess(candidateAnswer) ||
-      indicatesNoInternetAccess(candidateAnswer) ||
-      indicatesWebDeflection(candidateAnswer))
-  ) {
-    log(
-      `[${new Date().toISOString()}] Chat fallback: refusal/deflection detected, forcing web_search_context`,
-    );
-    return await fallbackWithContext();
-  }
+  const context = [
+    `Web search results for: ${lastUserMessage}`,
+    ...results.map(
+      (r, i) => `${i + 1}. ${r.title}\nURL: ${r.url}\nSnippet: ${r.snippet || '(no snippet)'}`,
+    ),
+  ].join('\n\n');
 
-  return firstData;
+  // ── Step 4: Re-ask AI with search results ────────────────────────────
+  log(`[${new Date().toISOString()}] Re-asking AI with ${results.length} web results`);
+  return await requestOllamaChat(
+    {
+      ...body,
+      stream: false,
+      messages: [
+        ...originalMessages,
+        {
+          role: 'system',
+          content:
+            "The user's question requires up-to-date information. Use the following web search results to answer accurately. Cite URLs when helpful.",
+        },
+        { role: 'system', content: `web_search_context:\n${context}` },
+      ],
+    },
+    signal,
+  );
 }
 
 router.post('/api/chat', chatLimiter, async (req: Request, res: Response) => {
-  const { model, messages } = req.body ?? {};
+  const { model, messages, session_id } = req.body ?? {};
   if (!model || typeof model !== 'string') {
     res.status(400).json({ error: 'Missing required field: model' });
     return;
@@ -346,11 +342,62 @@ router.post('/api/chat', chatLimiter, async (req: Request, res: Response) => {
   const controller = new AbortController();
   req.on('close', () => controller.abort());
 
-  const body = { ...req.body };
-  const wantsStream = body.stream !== false;
+  // ── Session: resolve & prepend history (safe — never crash) ──────────────
+  let sessionId: string | undefined;
+  let fullMessages = [...messages];
 
   try {
-    const data = await runChatWithTools(body, controller.signal);
+    if (session_id !== false) {
+      const session =
+        session_id && typeof session_id === 'string'
+          ? getSession(session_id)
+          : getOrCreateActiveSession();
+
+      if (session) {
+        sessionId = session.id;
+        if (session.messages.length > 0) {
+          fullMessages = [...session.messages, ...messages];
+        }
+      }
+    }
+  } catch {
+    // Session load failed — continue without session context
+  }
+
+  const body = { ...req.body, messages: fullMessages };
+  const wantsStream = body.stream !== false;
+
+  // ── Inject RAG context if index is loaded ────────────────────────────────
+  if (isRagEnabled()) {
+    const lastUser = [...fullMessages].reverse().find((m: any) => m.role === 'user');
+    const ragCtx = buildRagContext(String(lastUser?.content ?? ''));
+    if (ragCtx) {
+      body.messages = [
+        ...fullMessages,
+        { role: 'system', content: `Relevant context from local files:\n${ragCtx}` },
+      ];
+    }
+  }
+
+  // ── Check prompt cache ───────────────────────────────────────────────────
+  const ck = cacheKey(model, body.messages, body.options);
+  if (isCacheEnabled() && !wantsStream) {
+    const cached = cacheGet(ck);
+    if (cached) {
+      log(`[${new Date().toISOString()}] Cache hit for ${model}`);
+      res.json(cached);
+      return;
+    }
+  }
+
+  try {
+    // ── Wrap in request queue ──────────────────────────────────────────────
+    const data = await enqueue(
+      () => runChatWithTools(body, controller.signal),
+      'normal',
+      `chat:${model}`,
+    );
+
     if (data.prompt_eval_count || data.eval_count) {
       addTokenUsage(data.prompt_eval_count ?? 0, data.eval_count ?? 0);
     }
@@ -358,8 +405,38 @@ router.post('/api/chat', chatLimiter, async (req: Request, res: Response) => {
     const lastUserMsg = [...messages].reverse().find((m: any) => m.role === 'user');
     const prompt = lastUserMsg?.content ?? '(no prompt)';
     const responseText = data.message?.content ?? '';
+
+    // Strip <think> blocks when reasoning is disabled
+    if (!isReasoningEnabled() && data.message?.content) {
+      data.message.content = data.message.content.replace(/<think>[\s\S]*?<\/think>/g, '').trim();
+    }
+
     logResponse(model, prompt, responseText, JSON.stringify(data, null, 2));
     void fireWebhook({ model, prompt, response: responseText });
+
+    // ── Persist to session (safe — never crash) ─────────────────────────
+    if (sessionId) {
+      try {
+        const userMsgs: ChatMessage[] = messages
+          .filter((m: any) => m.role === 'user')
+          .map((m: any) => ({ role: 'user' as const, content: String(m.content ?? '') }));
+        const assistantMsg: ChatMessage = { role: 'assistant', content: responseText };
+        appendMessages(sessionId, [...userMsgs, assistantMsg]);
+
+        const session = getSession(sessionId);
+        if (session && session.messages.length <= userMsgs.length + 1) {
+          autoNameSession(sessionId, prompt);
+        }
+        data.session_id = sessionId;
+      } catch {
+        // Session persistence failed — continue normally
+      }
+    }
+
+    // ── Store in cache ─────────────────────────────────────────────────────
+    if (isCacheEnabled() && !wantsStream) {
+      cacheSet(ck, data);
+    }
 
     if (wantsStream) {
       res.setHeader('Content-Type', 'application/x-ndjson');

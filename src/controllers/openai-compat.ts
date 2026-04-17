@@ -1,8 +1,24 @@
 import { Router, Request, Response } from 'express';
-import { OLLAMA_URL, WEB_SEARCH_MAX_RESULTS, isWebSearchEnabled } from '../config';
+import {
+  OLLAMA_URL,
+  WEB_SEARCH_MAX_RESULTS,
+  isWebSearchEnabled,
+  isReasoningEnabled,
+} from '../config';
 import { searchWeb } from '../services/web-search';
 import { log, addTokenUsage, logResponse } from '../startup/dashboard';
 import { fireWebhook } from '../services/webhook';
+import { cacheKey, cacheGet, cacheSet, isCacheEnabled } from '../services/prompt-cache';
+import { enqueue } from '../services/request-queue';
+import { routedOllamaFetch } from '../services/backend-router';
+import { buildRagContext, isRagEnabled } from '../services/rag';
+import {
+  getOrCreateActiveSession,
+  getSession,
+  appendMessages,
+  autoNameSession,
+  ChatMessage,
+} from '../services/sessions';
 
 const router = Router();
 
@@ -50,6 +66,19 @@ function toOllamaTools(tools?: any[]): any[] | undefined {
   return tools;
 }
 
+// ─── Parse reasoning / thinking blocks ───────────────────────────────────────
+function splitThinkContent(text: string): { thinking: string; content: string } {
+  const openIdx = text.indexOf('<think>');
+  if (openIdx === -1) return { thinking: '', content: text };
+  const closeIdx = text.indexOf('</think>', openIdx);
+  if (closeIdx === -1) {
+    return { thinking: text.slice(openIdx + 7).trim(), content: '' };
+  }
+  const thinking = text.slice(openIdx + 7, closeIdx).trim();
+  const content = (text.slice(0, openIdx) + text.slice(closeIdx + 8)).trim();
+  return { thinking, content };
+}
+
 // ─── Build an OpenAI-compatible chat completion response ─────────────────────
 function buildCompletion(ollamaData: any, model: string): any {
   const message = ollamaData.message ?? {};
@@ -68,6 +97,11 @@ function buildCompletion(ollamaData: any, model: string): any {
         }))
       : undefined;
 
+  const rawContent: string = message.content ?? '';
+  const { thinking, content: mainContent } = isReasoningEnabled()
+    ? splitThinkContent(rawContent)
+    : { thinking: '', content: rawContent.replace(/<think>[\s\S]*?<\/think>/g, '').trim() };
+
   return {
     id: `chatcmpl-${Date.now()}`,
     object: 'chat.completion',
@@ -78,7 +112,8 @@ function buildCompletion(ollamaData: any, model: string): any {
         index: 0,
         message: {
           role: 'assistant',
-          content: toolCalls ? null : (message.content ?? ''),
+          content: toolCalls ? null : mainContent,
+          ...(thinking ? { reasoning_content: thinking } : {}),
           ...(toolCalls ? { tool_calls: toolCalls } : {}),
         },
         finish_reason: mapFinishReason(ollamaData.done_reason),
@@ -114,13 +149,38 @@ function buildStreamChunk(
   );
 }
 
+// ─── Detect explicit user search intent ──────────────────────────────────────
+function userExplicitlyAsksForSearch(text: string): boolean {
+  const t = text.toLowerCase();
+  return /(search\s+(the\s+)?(web|internet|online|google|bing|duckduckgo)|look\s*(it)?\s*up\s*(online|on the web|on the internet)?|find\s+(online|on the web|on the internet)|go\s+online|browse\s+the\s+(web|internet)|google\s+(it|this|that|for)|search\s+for\s+it|web\s+search|internet\s+search)/.test(
+    t,
+  );
+}
+
+function looksLikeWebQuery(text: string): boolean {
+  const t = text.toLowerCase();
+  return (
+    /(latest|recent|current|news|today|weather|forecast|temperature|stock|price|score|live|real-time|what is|who is|when is|where is|how much|how many)/.test(
+      t,
+    ) || t.includes('?')
+  );
+}
+
+function modelIndicatesUncertainty(text: string): boolean {
+  const t = text.toLowerCase();
+  return /(cannot|can't|unable|don't)\s+(access|browse|search).*(internet|web)|unable to find|could not find|couldn't find|can't find|no information|i do not know|i don't know|my (training|knowledge).*cut[- ]?off|as of my|not aware of|recommend checking|check (a|an|the)?\s*(website|websites)|don't have access.*(real[- ]?time|live|current).*(data|information)/.test(
+    t,
+  );
+}
+
 // ─── Simple web-search injection for OpenAI-compat layer ─────────────────────
 async function resolveWithWebSearch(body: Record<string, any>, signal: AbortSignal): Promise<any> {
   const messages = Array.isArray(body.messages) ? body.messages : [];
   const lastUser = [...messages].reverse().find((m: any) => m.role === 'user');
   const query = String(lastUser?.content ?? '').trim();
 
-  if (isWebSearchEnabled() && query) {
+  // If user explicitly asks for search, search immediately before calling model
+  if (isWebSearchEnabled() && query && userExplicitlyAsksForSearch(query)) {
     const results = await searchWeb(query, WEB_SEARCH_MAX_RESULTS);
     if (results.length > 0) {
       const context = results
@@ -136,7 +196,7 @@ async function resolveWithWebSearch(body: Record<string, any>, signal: AbortSign
     }
   }
 
-  const upstream = await fetch(`${OLLAMA_URL}/api/chat`, {
+  const upstream = await routedOllamaFetch('/api/chat', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ ...body, stream: false }),
@@ -151,12 +211,55 @@ async function resolveWithWebSearch(body: Record<string, any>, signal: AbortSign
     throw err;
   }
 
-  return upstream.json();
+  const data = (await upstream.json()) as any;
+
+  // If model shows uncertainty and query looks web-searchable, retry with context
+  const responseText = String(data?.message?.content ?? '');
+  if (
+    isWebSearchEnabled() &&
+    query &&
+    !body._webRetried &&
+    (looksLikeWebQuery(query) || userExplicitlyAsksForSearch(query)) &&
+    modelIndicatesUncertainty(responseText)
+  ) {
+    log(`[${new Date().toISOString()}] OpenAI-compat: model uncertain, retrying with web context`);
+    const results = await searchWeb(query, WEB_SEARCH_MAX_RESULTS);
+    if (results.length > 0) {
+      const context = results
+        .map((r, i) => `${i + 1}. ${r.title}\nURL: ${r.url}\nSnippet: ${r.snippet}`)
+        .join('\n\n');
+      const retryBody = {
+        ...body,
+        _webRetried: true,
+        messages: [
+          ...messages,
+          {
+            role: 'system',
+            content: 'Use the provided web_search_context to answer. Cite URLs when helpful.',
+          },
+          {
+            role: 'system',
+            content: `web_search_context:\n${context}`,
+          },
+        ],
+      };
+      const retry = await routedOllamaFetch('/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ...retryBody, stream: false }),
+        signal,
+      });
+      if (retry.ok) return retry.json();
+    }
+  }
+
+  return data;
 }
 
 // ─── POST /v1/chat/completions ───────────────────────────────────────────────
 router.post('/v1/chat/completions', async (req: Request, res: Response) => {
-  const { model, messages, stream, tools, temperature, max_tokens, top_p, stop } = req.body ?? {};
+  const { model, messages, stream, tools, temperature, max_tokens, top_p, stop, session_id } =
+    req.body ?? {};
 
   if (!model || !Array.isArray(messages)) {
     res.status(400).json({
@@ -168,9 +271,49 @@ router.post('/v1/chat/completions', async (req: Request, res: Response) => {
   const controller = new AbortController();
   req.on('close', () => controller.abort());
 
+  // ── Session: resolve & prepend history (safe — never crash) ──────────
+  let sessionId: string | undefined;
+  let fullMessages = [...messages];
+
+  try {
+    if (session_id !== false) {
+      const session =
+        session_id && typeof session_id === 'string'
+          ? getSession(session_id)
+          : getOrCreateActiveSession();
+
+      if (session) {
+        sessionId = session.id;
+        if (session.messages.length > 0) {
+          const historyMsgs = session.messages.map((m) => ({
+            role: m.role,
+            content: m.content,
+          }));
+          fullMessages = [...historyMsgs, ...messages];
+        }
+      }
+    }
+  } catch {
+    // Session load failed — continue without session context
+  }
+
+  const ollamaMessages = toOllamaMessages(fullMessages);
+
+  // ── Inject RAG context ──────────────────────────────────────────────────
+  if (isRagEnabled()) {
+    const lastUser = [...messages].reverse().find((m: any) => m.role === 'user');
+    const ragCtx = buildRagContext(String(lastUser?.content ?? ''));
+    if (ragCtx) {
+      ollamaMessages.push({
+        role: 'system',
+        content: `Relevant context from local files:\n${ragCtx}`,
+      });
+    }
+  }
+
   const ollamaBody: Record<string, any> = {
     model,
-    messages: toOllamaMessages(messages),
+    messages: ollamaMessages,
     stream: !!stream,
     options: {
       ...(temperature !== undefined ? { temperature } : {}),
@@ -181,6 +324,17 @@ router.post('/v1/chat/completions', async (req: Request, res: Response) => {
   };
   if (toOllamaTools(tools)) ollamaBody.tools = toOllamaTools(tools);
 
+  // ── Check prompt cache (non-streaming only) ─────────────────────────────
+  const ck = cacheKey(model, ollamaBody.messages, ollamaBody.options);
+  if (isCacheEnabled() && !stream) {
+    const cached = cacheGet(ck);
+    if (cached) {
+      log(`[${new Date().toISOString()}] Cache hit (OpenAI) for ${model}`);
+      res.json(cached);
+      return;
+    }
+  }
+
   try {
     if (stream) {
       // ── Streaming response ──────────────────────────────────────────────
@@ -188,7 +342,7 @@ router.post('/v1/chat/completions', async (req: Request, res: Response) => {
       res.setHeader('Cache-Control', 'no-cache');
       res.setHeader('Connection', 'keep-alive');
 
-      const upstream = await fetch(`${OLLAMA_URL}/api/chat`, {
+      const upstream = await routedOllamaFetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(ollamaBody),
@@ -209,6 +363,9 @@ router.post('/v1/chat/completions', async (req: Request, res: Response) => {
       const decoder = new TextDecoder();
       let buf = '';
       let fullContent = '';
+      let inThinkBlock = false;
+      let thinkBuf = '';
+      const reasoningOn = isReasoningEnabled();
 
       let done = false;
       while (!done) {
@@ -222,10 +379,60 @@ router.post('/v1/chat/completions', async (req: Request, res: Response) => {
           if (!line.trim()) continue;
           try {
             const chunk = JSON.parse(line);
-            const token: string = chunk.message?.content ?? '';
+            let token: string = chunk.message?.content ?? '';
             if (token) {
               fullContent += token;
-              res.write(buildStreamChunk(id, model, { content: token }, null));
+
+              if (reasoningOn) {
+                // Handle <think> block boundaries across streaming tokens
+                if (!inThinkBlock && token.includes('<think>')) {
+                  inThinkBlock = true;
+                  const parts = token.split('<think>');
+                  const before = parts[0];
+                  if (before) res.write(buildStreamChunk(id, model, { content: before }, null));
+                  thinkBuf += parts.slice(1).join('');
+                  token = '';
+                }
+                if (inThinkBlock) {
+                  if (token) thinkBuf += token;
+                  if (thinkBuf.includes('</think>')) {
+                    inThinkBlock = false;
+                    const parts = thinkBuf.split('</think>');
+                    const reasoning = parts[0].trim();
+                    const after = parts.slice(1).join('').trim();
+                    if (reasoning) {
+                      res.write(
+                        buildStreamChunk(id, model, { reasoning_content: reasoning } as any, null),
+                      );
+                    }
+                    if (after) res.write(buildStreamChunk(id, model, { content: after }, null));
+                    thinkBuf = '';
+                  }
+                } else if (token) {
+                  res.write(buildStreamChunk(id, model, { content: token }, null));
+                }
+              } else {
+                // Reasoning disabled — strip <think> blocks silently
+                if (!inThinkBlock && token.includes('<think>')) {
+                  inThinkBlock = true;
+                  const parts = token.split('<think>');
+                  const before = parts[0];
+                  if (before) res.write(buildStreamChunk(id, model, { content: before }, null));
+                  thinkBuf = parts.slice(1).join('');
+                  token = '';
+                }
+                if (inThinkBlock) {
+                  if (token) thinkBuf += token;
+                  if (thinkBuf.includes('</think>')) {
+                    inThinkBlock = false;
+                    const after = thinkBuf.split('</think>').slice(1).join('').trim();
+                    if (after) res.write(buildStreamChunk(id, model, { content: after }, null));
+                    thinkBuf = '';
+                  }
+                } else if (token) {
+                  res.write(buildStreamChunk(id, model, { content: token }, null));
+                }
+              }
             }
             if (chunk.done) {
               res.write(buildStreamChunk(id, model, {}, 'stop'));
@@ -234,6 +441,23 @@ router.post('/v1/chat/completions', async (req: Request, res: Response) => {
               const lastUser = [...messages].reverse().find((m: any) => m.role === 'user');
               logResponse(model, lastUser?.content ?? '', fullContent);
               void fireWebhook({ model, prompt: lastUser?.content ?? '', response: fullContent });
+
+              // Persist to session (streaming — safe)
+              if (sessionId) {
+                try {
+                  const userMsgs: ChatMessage[] = messages
+                    .filter((m: any) => m.role === 'user')
+                    .map((m: any) => ({ role: 'user' as const, content: String(m.content ?? '') }));
+                  const assistantMsg: ChatMessage = { role: 'assistant', content: fullContent };
+                  appendMessages(sessionId, [...userMsgs, assistantMsg]);
+                  const sess = getSession(sessionId);
+                  if (sess && sess.messages.length <= userMsgs.length + 1) {
+                    autoNameSession(sessionId, lastUser?.content ?? '');
+                  }
+                } catch {
+                  /* session persist failed — ok */
+                }
+              }
             }
           } catch {
             // skip unparseable chunks
@@ -244,8 +468,12 @@ router.post('/v1/chat/completions', async (req: Request, res: Response) => {
       return;
     }
 
-    // ── Non-streaming response ──────────────────────────────────────────────
-    const ollamaData = await resolveWithWebSearch(ollamaBody, controller.signal);
+    // ── Non-streaming response (queued) ────────────────────────────────────
+    const ollamaData = await enqueue(
+      () => resolveWithWebSearch(ollamaBody, controller.signal),
+      'normal',
+      `openai:${model}`,
+    );
 
     if (ollamaData.prompt_eval_count || ollamaData.eval_count) {
       addTokenUsage(ollamaData.prompt_eval_count ?? 0, ollamaData.eval_count ?? 0);
@@ -256,6 +484,29 @@ router.post('/v1/chat/completions', async (req: Request, res: Response) => {
     const responseText = ollamaData.message?.content ?? '';
     logResponse(model, lastUser?.content ?? '', responseText, JSON.stringify(ollamaData, null, 2));
     void fireWebhook({ model, prompt: lastUser?.content ?? '', response: responseText });
+
+    // ── Persist to session (safe — never crash) ──────────────────────────
+    if (sessionId) {
+      try {
+        const userMsgs: ChatMessage[] = messages
+          .filter((m: any) => m.role === 'user')
+          .map((m: any) => ({ role: 'user' as const, content: String(m.content ?? '') }));
+        const assistantMsg: ChatMessage = { role: 'assistant', content: responseText };
+        appendMessages(sessionId, [...userMsgs, assistantMsg]);
+        const session = getSession(sessionId);
+        if (session && session.messages.length <= userMsgs.length + 1) {
+          autoNameSession(sessionId, lastUser?.content ?? '');
+        }
+        completion.session_id = sessionId;
+      } catch {
+        /* session persist failed — ok */
+      }
+    }
+
+    // ── Store in prompt cache ─────────────────────────────────────────────
+    if (isCacheEnabled()) {
+      cacheSet(ck, completion);
+    }
 
     res.json(completion);
   } catch (err) {
@@ -272,7 +523,7 @@ router.post('/v1/chat/completions', async (req: Request, res: Response) => {
 // ─── GET /v1/models (OpenAI-compatible model list) ────────────────────────────
 router.get('/v1/models', async (_req: Request, res: Response) => {
   try {
-    const upstream = await fetch(`${OLLAMA_URL}/api/tags`);
+    const upstream = await routedOllamaFetch('/api/tags', {});
     const data = (await upstream.json()) as any;
     const models = (data.models ?? []).map((m: any) => ({
       id: m.name,

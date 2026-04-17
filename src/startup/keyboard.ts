@@ -15,10 +15,14 @@ import {
   toggleTruncation,
   toggleRawResponses,
   toggleWebSearch,
+  toggleReasoning,
   showHelp,
-  runUpdateOllama,
   showHistoryViewer,
   resizePanes,
+  showPresetPicker,
+  showSessionPicker,
+  newSession,
+  showRunningModels,
 } from './dashboard';
 
 export function setupKeyboardShortcuts(shutdown: () => void): void {
@@ -38,7 +42,9 @@ export function setupKeyboardShortcuts(shutdown: () => void): void {
       return;
     }
     const ok = await startOllama();
-    log(ok ? `[${ts()}] ● Ollama started` : `[${ts()}] ● Ollama did not respond in time`);
+    log(
+      ok ? `[${ts()}] ● Ollama started` : `[${ts()}] ⚠ Could not start Ollama — is it installed?`,
+    );
     setOllamaStatus(ok);
   });
 
@@ -56,7 +62,7 @@ export function setupKeyboardShortcuts(shutdown: () => void): void {
     const ts = () => new Date().toISOString();
     log(`[${ts()}] Restarting Ollama…`);
     const ok = await restartOllama();
-    log(ok ? `[${ts()}] ● Ollama restarted` : `[${ts()}] ● Ollama did not respond after restart`);
+    log(ok ? `[${ts()}] ● Ollama restarted` : `[${ts()}] ⚠ Ollama did not respond after restart`);
     setOllamaStatus(ok);
   });
 
@@ -92,11 +98,6 @@ export function setupKeyboardShortcuts(shutdown: () => void): void {
     toggleLogWrap();
   });
 
-  screen.key('u', () => {
-    if (guard()) return;
-    runUpdateOllama();
-  });
-
   screen.key('t', () => {
     if (guard()) return;
     toggleTruncation();
@@ -117,9 +118,34 @@ export function setupKeyboardShortcuts(shutdown: () => void): void {
     toggleWebSearch();
   });
 
-  screen.key('H', () => {
+  screen.key('n', () => {
+    if (guard()) return;
+    toggleReasoning();
+  });
+
+  screen.key('S-h', () => {
     if (guard()) return;
     showHistoryViewer();
+  });
+
+  screen.key('p', () => {
+    if (guard()) return;
+    showPresetPicker();
+  });
+
+  screen.key('S-s', () => {
+    if (guard()) return;
+    showSessionPicker();
+  });
+
+  screen.key('S-n', () => {
+    if (guard()) return;
+    newSession();
+  });
+
+  screen.key('l', () => {
+    if (guard()) return;
+    showRunningModels();
   });
 
   // Resizable panes: [ / ] shrink/grow left info pane; { / } shrink/grow middle logs pane

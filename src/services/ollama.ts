@@ -1,9 +1,49 @@
-import { exec, spawn } from 'child_process';
+import { exec, spawn, ChildProcess } from 'child_process';
 import { promisify } from 'util';
+import * as fs from 'fs';
+import * as path from 'path';
+import * as os from 'os';
 import { OLLAMA_URL } from '../config';
 import { getOllamaEnv, log } from '../startup/dashboard';
 
 const execAsync = promisify(exec);
+
+// ─── Track our own Ollama process ────────────────────────────────────────────
+let managedPid: number | null = null;
+let weStartedOllama = false;
+const PID_FILE = path.join(os.homedir(), '.zerollama', 'ollama.pid');
+
+function savePid(pid: number): void {
+  try {
+    fs.mkdirSync(path.dirname(PID_FILE), { recursive: true });
+    fs.writeFileSync(PID_FILE, String(pid), 'utf-8');
+  } catch {
+    /* ok */
+  }
+}
+
+function clearPid(): void {
+  managedPid = null;
+  weStartedOllama = false;
+  try {
+    fs.unlinkSync(PID_FILE);
+  } catch {
+    /* ok */
+  }
+}
+
+function isProcessAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export function didWeStartOllama(): boolean {
+  return weStartedOllama;
+}
 
 export async function checkConnection(): Promise<boolean> {
   try {
@@ -20,49 +60,58 @@ export async function checkConnection(): Promise<boolean> {
 }
 
 export async function stopOllama(): Promise<boolean> {
-  // Kill all ollama processes: serve, runner, and macOS app
-  await execAsync(
-    'pkill -9 -f "ollama" 2>/dev/null; killall -9 ollama 2>/dev/null; killall -9 "Ollama" 2>/dev/null; true',
-  );
+  // Only kill the process WE started (or the specific PID we track)
+  if (managedPid && isProcessAlive(managedPid)) {
+    try {
+      process.kill(managedPid, 'SIGTERM');
+    } catch {
+      /* ok */
+    }
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+    // If still alive, force kill
+    if (isProcessAlive(managedPid)) {
+      try {
+        process.kill(managedPid, 'SIGKILL');
+      } catch {
+        /* ok */
+      }
+      await new Promise((resolve) => setTimeout(resolve, 500));
+    }
+    clearPid();
+    return !(await checkConnection());
+  }
+
+  // Fallback: we didn't start it, try graceful pkill
+  await execAsync('pkill -f "ollama serve" 2>/dev/null; true');
   await new Promise((resolve) => setTimeout(resolve, 1000));
+  clearPid();
   return !(await checkConnection());
 }
 
 export async function startOllama(): Promise<boolean> {
+  // Don't start if already running
+  if (await checkConnection()) {
+    log(`[${new Date().toISOString()}] Ollama already running`);
+    return true;
+  }
+
   const child = spawn('ollama', ['serve'], {
     env: getOllamaEnv(),
-    stdio: ['ignore', 'pipe', 'pipe'],
-    detached: false,
+    stdio: 'ignore', // fully detached — no pipe breakage on exit
+    detached: true,
   });
   child.unref();
 
-  // Stream Ollama stdout/stderr into the dashboard log
-  let stderrBuf = '';
-  child.stdout?.on('data', (chunk: Buffer) => {
-    const lines = chunk
-      .toString()
-      .split('\n')
-      .filter((l: string) => l.trim());
-    for (const line of lines) {
-      log(`[ollama] ${line}`);
-    }
-  });
-  child.stderr?.on('data', (chunk: Buffer) => {
-    stderrBuf += chunk.toString();
-    const lines = stderrBuf.split('\n');
-    stderrBuf = lines.pop() ?? '';
-    for (const line of lines) {
-      if (line.trim()) log(`[ollama] ${line}`);
-    }
-  });
   child.on('error', (err) => {
-    log(`[ollama] process error: ${err.message}`);
+    log(`[${new Date().toISOString()}] [ollama] process error: ${err.message}`);
+    clearPid();
   });
-  child.on('exit', (code) => {
-    if (code !== null && code !== 0) {
-      log(`[ollama] exited with code ${code}`);
-    }
-  });
+
+  if (child.pid) {
+    managedPid = child.pid;
+    weStartedOllama = true;
+    savePid(child.pid);
+  }
 
   for (let i = 0; i < 10; i++) {
     await new Promise((resolve) => setTimeout(resolve, 500));
@@ -72,10 +121,8 @@ export async function startOllama(): Promise<boolean> {
 }
 
 export async function restartOllama(): Promise<boolean> {
-  await execAsync(
-    'pkill -9 -f "ollama" 2>/dev/null; killall -9 ollama 2>/dev/null; killall -9 "Ollama" 2>/dev/null; true',
-  );
-  await new Promise((resolve) => setTimeout(resolve, 1500));
+  await stopOllama();
+  await new Promise((resolve) => setTimeout(resolve, 500));
   return startOllama();
 }
 
