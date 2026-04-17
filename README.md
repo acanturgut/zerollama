@@ -1,5 +1,5 @@
-
 # Zerollama
+
 <img width="1412" height="1056" alt="Screenshot 2026-04-17 at 03 13 27" src="https://github.com/user-attachments/assets/6dd8101f-bec7-4d89-8502-0cdd640b0819" />
 
 A terminal-based middleware proxy for [Ollama](https://ollama.com) with a real-time dashboard. Run it on your local network to monitor, manage, and interact with Ollama from a rich TUI.
@@ -28,7 +28,7 @@ A terminal-based middleware proxy for [Ollama](https://ollama.com) with a real-t
 
 ```bash
 git clone <repo-url> && cd zerollama
-yarn install   # or npm install
+yarn install
 ```
 
 ## Usage
@@ -46,12 +46,12 @@ The proxy starts on **http://localhost:3001** by default. Point any Ollama-compa
 
 ### Environment variables
 
-| Variable      | Default                    | Description              |
-| ------------- | -------------------------- | ------------------------ |
-| `OLLAMA_URL`  | `http://127.0.0.1:11434`  | Upstream Ollama address  |
-| `PORT`        | `3001`                     | Proxy listen port        |
-| `WEB_SEARCH_ENABLED` | `1`                | Enable built-in web search tool |
-| `WEB_SEARCH_MAX_RESULTS` | `5`            | Default max results returned by web search |
+| Variable                 | Default                  | Description                                |
+| ------------------------ | ------------------------ | ------------------------------------------ |
+| `OLLAMA_URL`             | `http://127.0.0.1:11434` | Upstream Ollama address                    |
+| `PORT`                   | `3001`                   | Proxy listen port                          |
+| `WEB_SEARCH_ENABLED`     | `1`                      | Enable built-in web search tool            |
+| `WEB_SEARCH_MAX_RESULTS` | `5`                      | Default max results returned by web search |
 
 ## Web search
 
@@ -65,42 +65,22 @@ curl 'http://localhost:3001/api/web-search?q=latest%20ollama%20release'
 
 ## Keyboard shortcuts
 
-| Key   | Action                          |
-| ----- | ------------------------------- |
-| `s`   | Start Ollama                    |
-| `x`   | Stop Ollama                     |
-| `r`   | Restart Ollama                  |
-| `c`   | Open config editor              |
-| `d`   | Toggle debug chat               |
-| `m`   | Open model picker               |
-| `e`   | Show API endpoints              |
-| `b`   | Run benchmark                   |
-| `i`   | Toggle built-in web search      |
-| `w`   | Toggle log line wrap            |
-| `t`   | Toggle response truncation      |
-| `R`   | Toggle raw JSON responses       |
-| `u`   | Update Ollama to latest release |
-| `q`   | Quit                            |
-
-## Project structure
-
-```
-src/
-  index.ts            # Entry point – Express server + dashboard init
-  config.ts           # OLLAMA_URL and PORT exports
-  controllers/
-    chat.ts           # POST /api/chat streaming proxy
-    models.ts         # Model list, pull, delete endpoints
-    ollama-control.ts # Start/stop/restart endpoints
-    health.ts         # GET /health
-  middleware/
-    index.ts          # Helmet, CORS, rate limiter, request logger
-  services/
-    ollama.ts         # Ollama process management + update logic
-  startup/
-    dashboard.ts      # Blessed TUI – all panels, config, presets, benchmark
-    keyboard.ts       # Keyboard shortcut bindings
-```
+| Key | Action                          |
+| --- | ------------------------------- |
+| `s` | Start Ollama                    |
+| `x` | Stop Ollama                     |
+| `r` | Restart Ollama                  |
+| `c` | Open config editor              |
+| `d` | Toggle debug chat               |
+| `m` | Open model picker               |
+| `e` | Show API endpoints              |
+| `b` | Run benchmark                   |
+| `i` | Toggle built-in web search      |
+| `w` | Toggle log line wrap            |
+| `t` | Toggle response truncation      |
+| `R` | Toggle raw JSON responses       |
+| `u` | Update Ollama to latest release |
+| `q` | Quit                            |
 
 ## License
 

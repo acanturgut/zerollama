@@ -1,10 +1,6 @@
 import { Router, Request, Response } from 'express';
 import rateLimit from 'express-rate-limit';
-import {
-  OLLAMA_URL,
-  WEB_SEARCH_MAX_RESULTS,
-  isWebSearchEnabled,
-} from '../config';
+import { OLLAMA_URL, WEB_SEARCH_MAX_RESULTS, isWebSearchEnabled } from '../config';
 import { searchWeb } from '../services/web-search';
 import { log, addTokenUsage, logResponse } from '../startup/dashboard';
 
@@ -124,10 +120,7 @@ function buildAssistantToolMessage(message: any): any {
   };
 }
 
-async function requestOllamaChat(
-  payload: Record<string, any>,
-  signal: AbortSignal,
-): Promise<any> {
+async function requestOllamaChat(payload: Record<string, any>, signal: AbortSignal): Promise<any> {
   const upstream = await fetch(`${OLLAMA_URL}/api/chat`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -153,16 +146,16 @@ function getLastUserMessage(messages: any[]): string {
 
 function looksLikeWebQuery(text: string): boolean {
   const t = text.toLowerCase();
-  return /(search|web|internet|latest|recent|current|news|today|lookup|find|release|update|version|weather|forecast|temperature|stock|price|score|live|real-time|what is|who is|when is|where is)/.test(
-    t,
-  ) || t.includes('?');
+  return (
+    /(search|web|internet|latest|recent|current|news|today|lookup|find|release|update|version|weather|forecast|temperature|stock|price|score|live|real-time|what is|who is|when is|where is)/.test(
+      t,
+    ) || t.includes('?')
+  );
 }
 
 function indicatesNoInternetAccess(text: string): boolean {
   const t = text.toLowerCase();
-  return /(cannot|can't|unable|don't)\s+(access|browse|search).*(internet|web)/.test(
-    t,
-  );
+  return /(cannot|can't|unable|don't)\s+(access|browse|search).*(internet|web)/.test(t);
 }
 
 function indicatesNoFind(text: string): boolean {
@@ -211,10 +204,7 @@ async function executeToolCall(toolCall: any): Promise<string> {
   return JSON.stringify({ query, results, count: results.length });
 }
 
-async function runChatWithTools(
-  body: Record<string, any>,
-  signal: AbortSignal,
-): Promise<any> {
+async function runChatWithTools(body: Record<string, any>, signal: AbortSignal): Promise<any> {
   let messages = Array.isArray(body.messages) ? [...body.messages] : [];
   const tools = mergeTools(body.tools);
   let firstData: any | null = null;
@@ -224,17 +214,14 @@ async function runChatWithTools(
     const lastUserMessage = getLastUserMessage(originalMessages);
     const results = await searchWeb(lastUserMessage, WEB_SEARCH_MAX_RESULTS);
     if (results.length === 0) {
-      log(
-        `[${new Date().toISOString()}] Chat fallback: web_search returned 0 results`,
-      );
+      log(`[${new Date().toISOString()}] Chat fallback: web_search returned 0 results`);
       return firstData;
     }
 
     const context = [
       `Web search results for: ${lastUserMessage}`,
       ...results.map(
-        (r, i) =>
-          `${i + 1}. ${r.title}\nURL: ${r.url}\nSnippet: ${r.snippet || '(no snippet)'}`,
+        (r, i) => `${i + 1}. ${r.title}\nURL: ${r.url}\nSnippet: ${r.snippet || '(no snippet)'}`,
       ),
     ].join('\n\n');
 
@@ -262,10 +249,7 @@ async function runChatWithTools(
   for (let round = 0; round < 4; round++) {
     let data: any;
     try {
-      data = await requestOllamaChat(
-        { ...body, stream: false, messages, tools },
-        signal,
-      );
+      data = await requestOllamaChat({ ...body, stream: false, messages, tools }, signal);
     } catch (err) {
       if ((err as any)?.status === 400 && round > 0 && isWebSearchEnabled()) {
         log(

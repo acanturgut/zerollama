@@ -38,15 +38,11 @@ function extractFromInstantAnswer(payload: any, limit: number): WebSearchResult[
   return out.slice(0, limit);
 }
 
-async function searchWebFallback(
-  query: string,
-  maxResults: number,
-): Promise<WebSearchResult[]> {
+async function searchWebFallback(query: string, maxResults: number): Promise<WebSearchResult[]> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 10000);
   try {
-    const url =
-      `https://api.duckduckgo.com/?format=json&no_html=1&skip_disambig=1&q=${encodeURIComponent(query)}`;
+    const url = `https://api.duckduckgo.com/?format=json&no_html=1&skip_disambig=1&q=${encodeURIComponent(query)}`;
     const resp = await fetch(url, {
       method: 'GET',
       signal: controller.signal,
@@ -71,9 +67,7 @@ function decodeHtml(value: string): string {
     .replace(/&#39;/g, "'")
     .replace(/&lt;/g, '<')
     .replace(/&gt;/g, '>')
-    .replace(/&#x([0-9a-fA-F]+);/g, (_m, hex) =>
-      String.fromCharCode(parseInt(hex, 16)),
-    )
+    .replace(/&#x([0-9a-fA-F]+);/g, (_m, hex) => String.fromCharCode(parseInt(hex, 16)))
     .replace(/&#(\d+);/g, (_m, dec) => String.fromCharCode(parseInt(dec, 10)));
 }
 
@@ -136,9 +130,7 @@ export async function searchWeb(
       const match = matches[i];
       const nextIndex = matches[i + 1]?.index ?? html.length;
       const segment = html.slice(match.index ?? 0, nextIndex);
-      const snippetMatch = segment.match(
-        /class="result__snippet"[^>]*>([\s\S]*?)<\/(?:a|div)>/,
-      );
+      const snippetMatch = segment.match(/class="result__snippet"[^>]*>([\s\S]*?)<\/(?:a|div)>/);
 
       const title = stripTags(match[2]);
       const url = normalizeUrl(match[1]);

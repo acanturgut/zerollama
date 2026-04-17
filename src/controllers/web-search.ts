@@ -1,8 +1,5 @@
 import { Router, Request, Response } from 'express';
-import {
-  WEB_SEARCH_MAX_RESULTS,
-  isWebSearchEnabled,
-} from '../config';
+import { WEB_SEARCH_MAX_RESULTS, isWebSearchEnabled } from '../config';
 import { searchWeb } from '../services/web-search';
 import { log } from '../startup/dashboard';
 
@@ -15,7 +12,9 @@ async function handleSearch(req: Request, res: Response) {
   }
 
   const query = String(req.query.q ?? req.body?.query ?? '').trim();
-  const maxResults = Number(req.query.max_results ?? req.body?.max_results ?? WEB_SEARCH_MAX_RESULTS);
+  const maxResults = Number(
+    req.query.max_results ?? req.body?.max_results ?? WEB_SEARCH_MAX_RESULTS,
+  );
 
   if (!query) {
     res.status(400).json({ error: 'Missing required query: q or query' });

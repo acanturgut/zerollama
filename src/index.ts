@@ -33,20 +33,13 @@ app.use((_req: express.Request, res: express.Response) => {
 });
 
 // ─── Global error handler ────────────────────────────────────────────────────
-app.use(
-  (
-    err: Error,
-    _req: express.Request,
-    res: express.Response,
-    _next: express.NextFunction,
-  ) => {
-    const msg = err.stack ?? err.message ?? String(err);
-    log(`[${new Date().toISOString()}] Unhandled error: ${msg}`);
-    if (!res.headersSent) {
-      res.status(500).json({ error: 'Internal server error', detail: msg });
-    }
-  },
-);
+app.use((err: Error, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+  const msg = err.stack ?? err.message ?? String(err);
+  log(`[${new Date().toISOString()}] Unhandled error: ${msg}`);
+  if (!res.headersSent) {
+    res.status(500).json({ error: 'Internal server error', detail: msg });
+  }
+});
 
 // ─── Graceful shutdown ───────────────────────────────────────────────────────
 let server: http.Server;

@@ -1,10 +1,5 @@
 import { Router, Request, Response } from 'express';
-import {
-  checkConnection,
-  startOllama,
-  stopOllama,
-  restartOllama,
-} from '../services/ollama';
+import { checkConnection, startOllama, stopOllama, restartOllama } from '../services/ollama';
 import { log } from '../startup/dashboard';
 
 const router = Router();

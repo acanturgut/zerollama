@@ -3,12 +3,7 @@ import helmet from 'helmet';
 import rateLimit from 'express-rate-limit';
 import express, { Request, Response, NextFunction } from 'express';
 import type { Express } from 'express';
-import {
-  log,
-  trackRequest,
-  trackError,
-  trackResponse,
-} from '../startup/dashboard';
+import { log, trackRequest, trackError, trackResponse } from '../startup/dashboard';
 
 export function applyMiddleware(app: Express): void {
   app.use(
@@ -47,16 +42,12 @@ export function applyMiddleware(app: Express): void {
       method === 'POST' || method === 'PUT' || method === 'PATCH'
         ? ` body=${JSON.stringify(req.body ?? {}).slice(0, 500)}`
         : '';
-    log(
-      `[${new Date().toISOString()}] → ${method} ${path} ${headerSummary}${bodySnippet}`,
-    );
+    log(`[${new Date().toISOString()}] → ${method} ${path} ${headerSummary}${bodySnippet}`);
     res.on('finish', () => {
       const ms = Date.now() - start;
       if (res.statusCode >= 400) trackError();
       else trackResponse();
-      log(
-        `[${new Date().toISOString()}] ← ${method} ${path} ${res.statusCode} (${ms}ms)`,
-      );
+      log(`[${new Date().toISOString()}] ← ${method} ${path} ${res.statusCode} (${ms}ms)`);
     });
     next();
   });

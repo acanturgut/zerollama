@@ -18,13 +18,10 @@ export async function printBanner(): Promise<boolean> {
 
   const W = 46;
   const hr = '─'.repeat(W);
-  const pad = (s: string, len: number) =>
-    s + ' '.repeat(Math.max(0, len - s.length));
+  const pad = (s: string, len: number) => s + ' '.repeat(Math.max(0, len - s.length));
   const row = (label: string, value: string) =>
     `│  ${dim}${pad(label, 10)}${r}${pad(value, W - 12)}│`;
-  const status = ollamaOk
-    ? `${green}● reachable${r}`
-    : `${red}● unreachable${r}`;
+  const status = ollamaOk ? `${green}● reachable${r}` : `${red}● unreachable${r}`;
   const statusVisLen = ollamaOk ? 11 : 13;
 
   const lines = [

@@ -1,9 +1,4 @@
-import {
-  checkConnection,
-  startOllama,
-  stopOllama,
-  restartOllama,
-} from '../services/ollama';
+import { checkConnection, startOllama, stopOllama, restartOllama } from '../services/ollama';
 import {
   log,
   setOllamaStatus,
@@ -41,11 +36,7 @@ export function setupKeyboardShortcuts(shutdown: () => void): void {
       return;
     }
     const ok = await startOllama();
-    log(
-      ok
-        ? `[${ts()}] ● Ollama started`
-        : `[${ts()}] ● Ollama did not respond in time`,
-    );
+    log(ok ? `[${ts()}] ● Ollama started` : `[${ts()}] ● Ollama did not respond in time`);
     setOllamaStatus(ok);
   });
 
@@ -54,11 +45,7 @@ export function setupKeyboardShortcuts(shutdown: () => void): void {
     const ts = () => new Date().toISOString();
     log(`[${ts()}] Stopping Ollama…`);
     const stopped = await stopOllama();
-    log(
-      stopped
-        ? `[${ts()}] Ollama stopped`
-        : `[${ts()}] ● Ollama still responding`,
-    );
+    log(stopped ? `[${ts()}] Ollama stopped` : `[${ts()}] ● Ollama still responding`);
     setOllamaStatus(!stopped);
   });
 
@@ -67,11 +54,7 @@ export function setupKeyboardShortcuts(shutdown: () => void): void {
     const ts = () => new Date().toISOString();
     log(`[${ts()}] Restarting Ollama…`);
     const ok = await restartOllama();
-    log(
-      ok
-        ? `[${ts()}] ● Ollama restarted`
-        : `[${ts()}] ● Ollama did not respond after restart`,
-    );
+    log(ok ? `[${ts()}] ● Ollama restarted` : `[${ts()}] ● Ollama did not respond after restart`);
     setOllamaStatus(ok);
   });
 

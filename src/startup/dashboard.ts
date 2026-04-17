@@ -175,10 +175,8 @@ export function getOllamaEnv(): Record<string, string> {
     OLLAMA_SCHED_SPREAD: ollamaConfig.schedSpread,
     OLLAMA_MULTIUSER_CACHE: ollamaConfig.multiuserCache,
   };
-  if (ollamaConfig.contextLength)
-    env.OLLAMA_CONTEXT_LENGTH = ollamaConfig.contextLength;
-  if (ollamaConfig.kvCacheType)
-    env.OLLAMA_KV_CACHE_TYPE = ollamaConfig.kvCacheType;
+  if (ollamaConfig.contextLength) env.OLLAMA_CONTEXT_LENGTH = ollamaConfig.contextLength;
+  if (ollamaConfig.kvCacheType) env.OLLAMA_KV_CACHE_TYPE = ollamaConfig.kvCacheType;
   return env;
 }
 
@@ -187,10 +185,7 @@ let sessionPromptTokens = 0;
 let sessionCompletionTokens = 0;
 let sessionRequests = 0;
 
-export function addTokenUsage(
-  promptTokens: number,
-  completionTokens: number,
-): void {
+export function addTokenUsage(promptTokens: number, completionTokens: number): void {
   sessionPromptTokens += promptTokens;
   sessionCompletionTokens += completionTokens;
   sessionRequests++;
@@ -241,9 +236,7 @@ function rebuildLogBox(box: blessed.Widgets.Log, lines: string[]): void {
 
 export function toggleLogWrap(): void {
   logWrap = !logWrap;
-  const wrapTag = logWrap
-    ? '{green-fg}wrap{/green-fg}'
-    : '{gray-fg}nowrap{/gray-fg}';
+  const wrapTag = logWrap ? '{green-fg}wrap{/green-fg}' : '{gray-fg}nowrap{/gray-fg}';
   if (zerollamaLogBox) {
     (zerollamaLogBox as any).options.wrap = logWrap;
     zerollamaLogBox.setLabel(` {bold}Zerollama{/bold} ${wrapTag} `);
@@ -272,11 +265,7 @@ let rawResponseMode = false;
 
 function formatResponse(entry: ResponseEntry, truncate: boolean): string[] {
   if (rawResponseMode) {
-    return [
-      `{cyan-fg}${entry.ts}{/cyan-fg} {bold}${entry.model}{/bold}`,
-      entry.rawJson,
-      '',
-    ];
+    return [`{cyan-fg}${entry.ts}{/cyan-fg} {bold}${entry.model}{/bold}`, entry.rawJson, ''];
   }
 
   const displayPrompt = truncate
@@ -306,9 +295,7 @@ function formatResponse(entry: ResponseEntry, truncate: boolean): string[] {
 export function toggleTruncation(): void {
   truncateResponses = !truncateResponses;
   if (responsesBox) {
-    const tag = truncateResponses
-      ? '{gray-fg}truncated{/gray-fg}'
-      : '{green-fg}full{/green-fg}';
+    const tag = truncateResponses ? '{gray-fg}truncated{/gray-fg}' : '{green-fg}full{/green-fg}';
     responsesBox.setLabel(` {bold}Responses{/bold} ${tag} `);
     // Re-render all stored responses
     responsesBox.setContent('');
@@ -323,9 +310,7 @@ export function toggleTruncation(): void {
     }
     if (screen) screen.render();
   }
-  log(
-    `[${new Date().toISOString()}] Response truncation: ${truncateResponses ? 'on' : 'off'}`,
-  );
+  log(`[${new Date().toISOString()}] Response truncation: ${truncateResponses ? 'on' : 'off'}`);
 }
 
 export function toggleRawResponses(): void {
@@ -449,9 +434,7 @@ export async function runUpdateOllama(): Promise<void> {
 
 export function toggleWebSearch(): void {
   const enabled = toggleWebSearchEnabled();
-  log(
-    `[${new Date().toISOString()}] Web search: ${enabled ? 'enabled' : 'disabled'}`,
-  );
+  log(`[${new Date().toISOString()}] Web search: ${enabled ? 'enabled' : 'disabled'}`);
   refreshUI();
 }
 
@@ -466,7 +449,13 @@ export function logResponse(
   sessionResponseCount++;
   if (!responsesBox) return;
   const ts = new Date().toISOString().slice(11, 19);
-  const entry: ResponseEntry = { model, prompt, response, rawJson: rawJson ?? '', ts };
+  const entry: ResponseEntry = {
+    model,
+    prompt,
+    response,
+    rawJson: rawJson ?? '',
+    ts,
+  };
   responseHistory.push(entry);
 
   for (const line of formatResponse(entry, truncateResponses)) {
@@ -524,9 +513,7 @@ export function trackResponse(): void {
 }
 
 function buildInfoContent(): string {
-  const webSearchTag = isWebSearchEnabled()
-    ? '{green-fg}on{/green-fg}'
-    : '{red-fg}off{/red-fg}';
+  const webSearchTag = isWebSearchEnabled() ? '{green-fg}on{/green-fg}' : '{red-fg}off{/red-fg}';
   const lines: string[] = [
     '',
     '  {bold}Commands{/bold}  {gray-fg}h help{/gray-fg}',
@@ -577,9 +564,7 @@ function formatUptime(): string {
   const h = Math.floor(diff / 3_600_000);
   const m = Math.floor((diff % 3_600_000) / 60_000);
   const s = Math.floor((diff % 60_000) / 1_000);
-  return h > 0
-    ? `${h}h${String(m).padStart(2, '0')}m`
-    : `${m}m${String(s).padStart(2, '0')}s`;
+  return h > 0 ? `${h}h${String(m).padStart(2, '0')}m` : `${m}m${String(s).padStart(2, '0')}s`;
 }
 
 function updateStatusLine(): void {
@@ -864,9 +849,7 @@ export function toggleDebug(): void {
   if (debugVisible) {
     // Enable Ollama debug logging
     setOllamaConfig({ debug: '1' });
-    log(
-      `[${new Date().toISOString()}] Debug mode ON — OLLAMA_DEBUG=1`,
-    );
+    log(`[${new Date().toISOString()}] Debug mode ON — OLLAMA_DEBUG=1`);
     infoBox.height = '40%-3';
     debugBox.show();
     debugInput.show();
@@ -953,8 +936,7 @@ export async function showModelPicker(): Promise<void> {
     width: '60%',
     height: Math.min(items.length + 2, 20),
     border: { type: 'line' },
-    label:
-      ' {bold}Select Model{/bold}  {gray-fg}f{/gray-fg} default  {gray-fg}d{/gray-fg} delete ',
+    label: ' {bold}Select Model{/bold}  {gray-fg}f{/gray-fg} default  {gray-fg}d{/gray-fg} delete ',
     tags: true,
     keys: false,
     vi: false,
@@ -1185,14 +1167,10 @@ async function showModelConfirm(name: string): Promise<void> {
   } else {
     lines.push(`  {bold}${name}{/bold}  {gray-fg}(not installed){/gray-fg}`);
     lines.push('');
-    lines.push(
-      '  {yellow-fg}Download this model from the registry?{/yellow-fg}',
-    );
+    lines.push('  {yellow-fg}Download this model from the registry?{/yellow-fg}');
   }
   lines.push('');
-  lines.push(
-    '  {green-fg}[Enter]{/green-fg} Confirm    {red-fg}[Esc]{/red-fg} Cancel',
-  );
+  lines.push('  {green-fg}[Enter]{/green-fg} Confirm    {red-fg}[Esc]{/red-fg} Cancel');
 
   const box = blessed.box({
     parent: screen,
@@ -1222,9 +1200,7 @@ async function showModelConfirm(name: string): Promise<void> {
         quant: info.details?.quantization_level ?? undefined,
         context: (() => {
           const mi = info.model_info ?? {};
-          const ctxKey = Object.keys(mi).find((k: string) =>
-            k.endsWith('.context_length'),
-          );
+          const ctxKey = Object.keys(mi).find((k: string) => k.endsWith('.context_length'));
           return ctxKey ? String(mi[ctxKey]) : undefined;
         })(),
       }
@@ -1365,9 +1341,7 @@ async function pullModel(name: string, info?: PullModelInfo): Promise<void> {
           const progressLines: string[] = [];
           if (total > 0 && completed > 0) {
             const pct = Math.round((completed / total) * 100);
-            const bar =
-              '█'.repeat(Math.floor(pct / 4)) +
-              '░'.repeat(25 - Math.floor(pct / 4));
+            const bar = '█'.repeat(Math.floor(pct / 4)) + '░'.repeat(25 - Math.floor(pct / 4));
             progressLines.push(`  ${status} ${digest}`);
             progressLines.push(
               `  [${bar}] ${pct}%  ${formatSize(completed)} / ${formatSize(total)}`,
@@ -1385,9 +1359,7 @@ async function pullModel(name: string, info?: PullModelInfo): Promise<void> {
           progressBox.setContent(`${infoHeader}${safe}`);
           scheduleRender();
         } catch (parseErr) {
-          log(
-            `[${ts()}] Pull: unparseable line #${lineCount}: ${line.slice(0, 120)}`,
-          );
+          log(`[${ts()}] Pull: unparseable line #${lineCount}: ${line.slice(0, 120)}`);
         }
       }
       if (pullError) break;
@@ -1473,10 +1445,7 @@ async function runDebugQuery(prompt: string): Promise<void> {
 
     if (!resp.ok) {
       const errBody = await resp.text().catch(() => '');
-      const safeErr = errBody
-        .replace(/\{/g, '{{')
-        .replace(/\}/g, '}}')
-        .slice(0, 300);
+      const safeErr = errBody.replace(/\{/g, '{{').replace(/\}/g, '}}').slice(0, 300);
       debugBox.log(`{red-fg}  Error: HTTP ${resp.status}{/red-fg}`);
       if (safeErr) {
         debugBox.log(`{red-fg}  ${safeErr}{/red-fg}`);
@@ -1488,12 +1457,8 @@ async function runDebugQuery(prompt: string): Promise<void> {
     }
 
     const data = (await resp.json()) as any;
-    const answer = (data.message?.content ?? '')
-      .replace(/\n/g, ' ')
-      .replace(/\s+/g, ' ')
-      .trim();
-    const truncAnswer =
-      answer.length > 200 ? answer.slice(0, 197) + '…' : answer;
+    const answer = (data.message?.content ?? '').replace(/\n/g, ' ').replace(/\s+/g, ' ').trim();
+    const truncAnswer = answer.length > 200 ? answer.slice(0, 197) + '…' : answer;
     const safeAnswer = truncAnswer.replace(/\{/g, '{{').replace(/\}/g, '}}');
     const promptTk = data.prompt_eval_count ?? 0;
     const completionTk = data.eval_count ?? 0;
@@ -1503,9 +1468,7 @@ async function runDebugQuery(prompt: string): Promise<void> {
       `  {cyan-fg}${elapsed}s{/cyan-fg}  tok: {bold}${promptTk}{/bold} in / {bold}${completionTk}{/bold} out  total {bold}${promptTk + completionTk}{/bold}`,
     );
     debugBox.log('');
-    log(
-      `[${ts()}] Debug: done in ${elapsed}s (${promptTk + completionTk} tokens)`,
-    );
+    log(`[${ts()}] Debug: done in ${elapsed}s (${promptTk + completionTk} tokens)`);
   } catch (err: any) {
     const elapsed = ((performance.now() - start) / 1000).toFixed(2);
     debugBox.log(`{red-fg}  Error (${elapsed}s): ${err.message}{/red-fg}`);
@@ -1570,9 +1533,7 @@ async function searchHuggingFace(query: string): Promise<HFModel[]> {
   }
 }
 
-async function fetchHFModelDetail(
-  modelId: string,
-): Promise<HFModelDetail | null> {
+async function fetchHFModelDetail(modelId: string): Promise<HFModelDetail | null> {
   try {
     const resp = await fetch(`https://huggingface.co/api/models/${modelId}`);
     if (!resp.ok) return null;
@@ -1690,10 +1651,7 @@ async function showHFResults(query: string): Promise<void> {
 
   const items = models.map((m) => {
     const tag = m.pipelineTag ? `{blue-fg}${m.pipelineTag}{/blue-fg} ` : '';
-    const size =
-      m.sizeBytes > 0
-        ? `{yellow-fg}${formatSize(m.sizeBytes)}{/yellow-fg} `
-        : '';
+    const size = m.sizeBytes > 0 ? `{yellow-fg}${formatSize(m.sizeBytes)}{/yellow-fg} ` : '';
     return `  ${m.id}  ${tag}${size}{gray-fg}↓${formatCount(m.downloads)} ♥${m.likes}{/gray-fg}`;
   });
 
@@ -1812,15 +1770,11 @@ async function showHFModelDetail(model: HFModel): Promise<void> {
     lines.push(`    {gray-fg}${detail.ggufFiles[i]}{/gray-fg}`);
   }
   if (detail.ggufFiles.length > maxFiles) {
-    lines.push(
-      `    {gray-fg}… and ${detail.ggufFiles.length - maxFiles} more{/gray-fg}`,
-    );
+    lines.push(`    {gray-fg}… and ${detail.ggufFiles.length - maxFiles} more{/gray-fg}`);
   }
 
   lines.push('');
-  lines.push(
-    '  {green-fg}{bold}↵ Pull{/bold}{/green-fg}  ·  {gray-fg}Esc Cancel{/gray-fg}',
-  );
+  lines.push('  {green-fg}{bold}↵ Pull{/bold}{/green-fg}  ·  {gray-fg}Esc Cancel{/gray-fg}');
   lines.push('');
 
   const boxHeight = Math.min(lines.length + 2, 28);
@@ -1855,12 +1809,8 @@ async function showHFModelDetail(model: HFModel): Promise<void> {
     const pullInfo: PullModelInfo = {
       name: detail.id,
       size: detail.totalSize > 0 ? formatSize(detail.totalSize) : undefined,
-      architecture:
-        detail.architecture !== '?' ? detail.architecture : undefined,
-      context:
-        detail.contextLength > 0
-          ? detail.contextLength.toLocaleString()
-          : undefined,
+      architecture: detail.architecture !== '?' ? detail.architecture : undefined,
+      context: detail.contextLength > 0 ? detail.contextLength.toLocaleString() : undefined,
     };
     log(`[${new Date().toISOString()}] Pulling HF model: ${pullName}`);
     await pullModel(pullName, pullInfo);
@@ -1935,15 +1885,14 @@ interface ConfigPreset {
 function detectPlatform(): 'apple' | 'nvidia' | 'unknown' {
   const platform = os.platform();
   const arch = os.arch();
-  if (platform === 'darwin' && (arch === 'arm64' || arch === 'arm'))
-    return 'apple';
+  if (platform === 'darwin' && (arch === 'arm64' || arch === 'arm')) return 'apple';
   // Check for NVIDIA GPU on Linux/Windows
   try {
     const { execSync } = require('child_process');
-    const out = execSync(
-      'nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null',
-      { encoding: 'utf-8', timeout: 3000 },
-    );
+    const out = execSync('nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null', {
+      encoding: 'utf-8',
+      timeout: 3000,
+    });
     if (out.trim()) return 'nvidia';
   } catch {}
   return 'unknown';
@@ -2207,8 +2156,7 @@ function showPresetPicker(): void {
 
   const applyPreset = (index: number) => {
     const preset = CONFIG_PRESETS[index];
-    const compatible =
-      preset.platform === 'any' || preset.platform === detectedPlatform;
+    const compatible = preset.platform === 'any' || preset.platform === detectedPlatform;
     if (!compatible) {
       log(
         `[${new Date().toISOString()}] Preset "${preset.name}" is not compatible with this device (${detectedPlatform})`,
@@ -2217,9 +2165,7 @@ function showPresetPicker(): void {
     }
     list.destroy();
     setOllamaConfig(preset.config);
-    log(
-      `[${new Date().toISOString()}] Preset applied: ${preset.name}`,
-    );
+    log(`[${new Date().toISOString()}] Preset applied: ${preset.name}`);
     modelPickerActive = false;
     refreshUI();
     void restartOllamaAfterConfigChange(`Preset applied: ${preset.name}`);
@@ -2268,9 +2214,7 @@ function editConfigField(field: ConfigField): void {
     const val = (value ?? '').trim();
     if (val) {
       setOllamaConfig({ [field.key]: val });
-      log(
-        `[${new Date().toISOString()}] Config: ${field.label} = ${val}`,
-      );
+      log(`[${new Date().toISOString()}] Config: ${field.label} = ${val}`);
       void restartOllamaAfterConfigChange(`Config updated: ${field.label}`);
     }
     modelPickerActive = false;
@@ -2311,10 +2255,7 @@ interface BenchRun {
 
 const benchScoreboard: BenchRun[] = [];
 
-async function runBenchQuestion(
-  model: string,
-  question: string,
-): Promise<BenchResult | null> {
+async function runBenchQuestion(model: string, question: string): Promise<BenchResult | null> {
   try {
     const start = performance.now();
     const resp = await fetch(`${OLLAMA_URL}/api/chat`, {
@@ -2416,9 +2357,7 @@ export async function runBenchmark(): Promise<void> {
     for (let j = 0; j < results.length; j++) {
       const r = results[j];
       const sq =
-        BENCH_QUESTIONS[j].length > 40
-          ? BENCH_QUESTIONS[j].slice(0, 37) + '…'
-          : BENCH_QUESTIONS[j];
+        BENCH_QUESTIONS[j].length > 40 ? BENCH_QUESTIONS[j].slice(0, 37) + '…' : BENCH_QUESTIONS[j];
       const safeSQ = sq.replace(/\{/g, '{{').replace(/\}/g, '}}');
       pLines.push(
         `  {green-fg}✓{/green-fg} ${safeSQ}  {cyan-fg}${r.timeSec}s{/cyan-fg}  {gray-fg}${r.tokPerSec} tok/s{/gray-fg}`,
@@ -2426,14 +2365,10 @@ export async function runBenchmark(): Promise<void> {
     }
     const shortQ = q.length > 40 ? q.slice(0, 37) + '…' : q;
     const safeQ = shortQ.replace(/\{/g, '{{').replace(/\}/g, '}}');
-    pLines.push(
-      `  {yellow-fg}⠹{/yellow-fg} ${safeQ}  {gray-fg}running…{/gray-fg}`,
-    );
+    pLines.push(`  {yellow-fg}⠹{/yellow-fg} ${safeQ}  {gray-fg}running…{/gray-fg}`);
     for (let j = i + 1; j < BENCH_QUESTIONS.length; j++) {
       const sq =
-        BENCH_QUESTIONS[j].length > 40
-          ? BENCH_QUESTIONS[j].slice(0, 37) + '…'
-          : BENCH_QUESTIONS[j];
+        BENCH_QUESTIONS[j].length > 40 ? BENCH_QUESTIONS[j].slice(0, 37) + '…' : BENCH_QUESTIONS[j];
       const safeSQ = sq.replace(/\{/g, '{{').replace(/\}/g, '}}');
       pLines.push(`  {gray-fg}○ ${safeSQ}{/gray-fg}`);
     }
@@ -2444,8 +2379,7 @@ export async function runBenchmark(): Promise<void> {
     if (!result) {
       log(`[${new Date().toISOString()}] Benchmark Q${i + 1} failed`);
       progressBox.setContent(
-        progressBox.getContent() +
-          '\n  {red-fg}Question failed — aborting{/red-fg}',
+        progressBox.getContent() + '\n  {red-fg}Question failed — aborting{/red-fg}',
       );
       scheduleRender();
       await new Promise((r) => setTimeout(r, 2000));
@@ -2476,10 +2410,7 @@ export async function runBenchmark(): Promise<void> {
   const avgTokPerSec = parseFloat(
     (results.reduce((s, r) => s + r.tokPerSec, 0) / results.length).toFixed(1),
   );
-  const totalTokens = results.reduce(
-    (s, r) => s + r.promptTokens + r.completionTokens,
-    0,
-  );
+  const totalTokens = results.reduce((s, r) => s + r.promptTokens + r.completionTokens, 0);
 
   const run: BenchRun = {
     model,
@@ -2490,9 +2421,7 @@ export async function runBenchmark(): Promise<void> {
     totalTokens,
   };
   benchScoreboard.unshift(run);
-  log(
-    `[${new Date().toISOString()}] Benchmark done: avg ${avgTime}s, ${avgTokPerSec} tok/s`,
-  );
+  log(`[${new Date().toISOString()}] Benchmark done: avg ${avgTime}s, ${avgTokPerSec} tok/s`);
   showBenchResults(run);
 }
 
@@ -2504,8 +2433,7 @@ function showBenchResults(run: BenchRun): void {
   ];
   for (let i = 0; i < run.results.length; i++) {
     const r = run.results[i];
-    const q =
-      r.question.length > 45 ? r.question.slice(0, 42) + '…' : r.question;
+    const q = r.question.length > 45 ? r.question.slice(0, 42) + '…' : r.question;
     const safeQ = q.replace(/\{/g, '{{').replace(/\}/g, '}}');
     lines.push(`  {bold}Q${i + 1}{/bold} ${safeQ}`);
     lines.push(
@@ -2517,9 +2445,7 @@ function showBenchResults(run: BenchRun): void {
     `  {bold}Average{/bold}   {cyan-fg}${run.avgTime}s{/cyan-fg}  │  {bold}${run.avgTokPerSec}{/bold} tok/s  │  ${run.totalTokens} total tokens`,
   );
   lines.push('');
-  lines.push(
-    '  {green-fg}↵ Scoreboard{/green-fg}  ·  {gray-fg}Esc Close{/gray-fg}',
-  );
+  lines.push('  {green-fg}↵ Scoreboard{/green-fg}  ·  {gray-fg}Esc Close{/gray-fg}');
   lines.push('');
 
   const box = blessed.box({
@@ -2559,9 +2485,7 @@ function showScoreboard(): void {
     return;
   }
 
-  const sorted = [...benchScoreboard].sort(
-    (a, b) => b.avgTokPerSec - a.avgTokPerSec,
-  );
+  const sorted = [...benchScoreboard].sort((a, b) => b.avgTokPerSec - a.avgTokPerSec);
   const lines: string[] = [
     '',
     '  {bold}#   Model                         Avg Time   Tok/s   Tokens   Date{/bold}',
@@ -2703,14 +2627,8 @@ export function showEndpoints(): void {
     ];
     for (let i = 0; i < endpoints.length; i++) {
       const ep = endpoints[i];
-      const methodColor =
-        ep.method === 'GET'
-          ? 'green'
-          : ep.method === 'DELETE'
-            ? 'red'
-            : 'yellow';
-      const prefix =
-        i === selected ? '{bold}{white-fg}▸{/white-fg}{/bold}' : ' ';
+      const methodColor = ep.method === 'GET' ? 'green' : ep.method === 'DELETE' ? 'red' : 'yellow';
+      const prefix = i === selected ? '{bold}{white-fg}▸{/white-fg}{/bold}' : ' ';
       const bg = i === selected ? '{inverse}' : '';
       const bgEnd = i === selected ? '{/inverse}' : '';
       const num = String(i + 1).padStart(2);
@@ -2765,14 +2683,10 @@ export function showEndpoints(): void {
     try {
       const { execSync } = require('child_process');
       execSync('pbcopy', { input: curl });
-      box.setLabel(
-        ` {bold}Copied!{/bold} {green-fg}${endpoints[selected].path}{/green-fg} `,
-      );
+      box.setLabel(` {bold}Copied!{/bold} {green-fg}${endpoints[selected].path}{/green-fg} `);
       scheduleRender();
       setTimeout(() => {
-        box.setLabel(
-          ` {bold}API Documentation (${endpoints.length} endpoints){/bold} `,
-        );
+        box.setLabel(` {bold}API Documentation (${endpoints.length} endpoints){/bold} `);
         scheduleRender();
       }, 1500);
     } catch {
@@ -2788,14 +2702,10 @@ export function showEndpoints(): void {
       try {
         const { execSync } = require('child_process');
         execSync('pbcopy', { input: curl });
-        box.setLabel(
-          ` {bold}Copied!{/bold} {green-fg}${endpoints[selected].path}{/green-fg} `,
-        );
+        box.setLabel(` {bold}Copied!{/bold} {green-fg}${endpoints[selected].path}{/green-fg} `);
         refresh();
         setTimeout(() => {
-          box.setLabel(
-            ` {bold}API Documentation (${endpoints.length} endpoints){/bold} `,
-          );
+          box.setLabel(` {bold}API Documentation (${endpoints.length} endpoints){/bold} `);
           scheduleRender();
         }, 1500);
       } catch {

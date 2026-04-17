@@ -94,13 +94,10 @@ export async function getLatestOllamaVersion(): Promise<string | null> {
   try {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 10000);
-    const resp = await fetch(
-      'https://api.github.com/repos/ollama/ollama/releases/latest',
-      {
-        signal: controller.signal,
-        headers: { Accept: 'application/vnd.github.v3+json' },
-      },
-    );
+    const resp = await fetch('https://api.github.com/repos/ollama/ollama/releases/latest', {
+      signal: controller.signal,
+      headers: { Accept: 'application/vnd.github.v3+json' },
+    });
     clearTimeout(timeout);
     if (!resp.ok) return null;
     const data = (await resp.json()) as any;
@@ -112,9 +109,7 @@ export async function getLatestOllamaVersion(): Promise<string | null> {
   }
 }
 
-export async function updateOllama(
-  onLog: (msg: string) => void,
-): Promise<boolean> {
+export async function updateOllama(onLog: (msg: string) => void): Promise<boolean> {
   onLog('Checking current Ollama version…');
   const current = await getOllamaVersion();
   if (!current) {
@@ -143,12 +138,9 @@ export async function updateOllama(
 
   try {
     // macOS: use the official install script
-    const { stderr } = await execAsync(
-      'curl -fsSL https://ollama.com/install.sh | sh',
-      {
-        timeout: 120000,
-      },
-    );
+    const { stderr } = await execAsync('curl -fsSL https://ollama.com/install.sh | sh', {
+      timeout: 120000,
+    });
     if (stderr && stderr.trim()) {
       onLog(`[update] ${stderr.trim()}`);
     }

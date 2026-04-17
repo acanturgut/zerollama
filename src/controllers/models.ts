@@ -6,41 +6,31 @@ import { log } from '../startup/dashboard';
 const router = Router();
 
 // List models
-router.get(
-  ['/api/models', '/api/tags'],
-  async (_req: Request, res: Response) => {
-    try {
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 10000);
-      const upstream = await fetch(`${OLLAMA_URL}/api/tags`, {
-        signal: controller.signal,
+router.get(['/api/models', '/api/tags'], async (_req: Request, res: Response) => {
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 10000);
+    const upstream = await fetch(`${OLLAMA_URL}/api/tags`, {
+      signal: controller.signal,
+    });
+    clearTimeout(timeout);
+    if (!upstream.ok) {
+      const errBody = await upstream.text().catch(() => '');
+      log(`[${new Date().toISOString()}] Ollama /api/tags ${upstream.status}: ${errBody}`);
+      res.status(upstream.status).json({
+        error: `Ollama responded with ${upstream.status}`,
+        detail: errBody,
       });
-      clearTimeout(timeout);
-      if (!upstream.ok) {
-        const errBody = await upstream.text().catch(() => '');
-        log(
-          `[${new Date().toISOString()}] Ollama /api/tags ${upstream.status}: ${errBody}`,
-        );
-        res
-          .status(upstream.status)
-          .json({
-            error: `Ollama responded with ${upstream.status}`,
-            detail: errBody,
-          });
-        return;
-      }
-      const data = await upstream.json();
-      res.json(data);
-    } catch (err) {
-      const msg =
-        err instanceof Error ? (err.stack ?? err.message) : String(err);
-      log(`[${new Date().toISOString()}] Error fetching models: ${msg}`);
-      res
-        .status(502)
-        .json({ error: 'Cannot reach Ollama. Is it running?', detail: msg });
+      return;
     }
-  },
-);
+    const data = await upstream.json();
+    res.json(data);
+  } catch (err) {
+    const msg = err instanceof Error ? (err.stack ?? err.message) : String(err);
+    log(`[${new Date().toISOString()}] Error fetching models: ${msg}`);
+    res.status(502).json({ error: 'Cannot reach Ollama. Is it running?', detail: msg });
+  }
+});
 
 // Pull a model
 router.post('/api/pull', async (req: Request, res: Response) => {
@@ -59,15 +49,11 @@ router.post('/api/pull', async (req: Request, res: Response) => {
 
     if (!upstream.ok) {
       const errBody = await upstream.text().catch(() => '');
-      log(
-        `[${new Date().toISOString()}] Ollama /api/pull ${upstream.status}: ${errBody}`,
-      );
-      res
-        .status(upstream.status)
-        .json({
-          error: `Ollama responded with ${upstream.status}`,
-          detail: errBody,
-        });
+      log(`[${new Date().toISOString()}] Ollama /api/pull ${upstream.status}: ${errBody}`);
+      res.status(upstream.status).json({
+        error: `Ollama responded with ${upstream.status}`,
+        detail: errBody,
+      });
       return;
     }
 
@@ -80,9 +66,7 @@ router.post('/api/pull', async (req: Request, res: Response) => {
     res.setHeader('Transfer-Encoding', 'chunked');
     res.setHeader('Cache-Control', 'no-cache');
 
-    const nodeStream = Readable.fromWeb(
-      upstream.body as Parameters<typeof Readable.fromWeb>[0],
-    );
+    const nodeStream = Readable.fromWeb(upstream.body as Parameters<typeof Readable.fromWeb>[0]);
     nodeStream.pipe(res);
     nodeStream.on('error', (err) => {
       log(`[${new Date().toISOString()}] Pull stream error: ${err}`);
@@ -91,9 +75,7 @@ router.post('/api/pull', async (req: Request, res: Response) => {
   } catch (err) {
     const msg = err instanceof Error ? (err.stack ?? err.message) : String(err);
     log(`[${new Date().toISOString()}] Error in /api/pull: ${msg}`);
-    res
-      .status(502)
-      .json({ error: 'Cannot reach Ollama. Is it running?', detail: msg });
+    res.status(502).json({ error: 'Cannot reach Ollama. Is it running?', detail: msg });
   }
 });
 
@@ -109,24 +91,18 @@ router.delete('/api/models/:name', async (req: Request, res: Response) => {
 
     if (!upstream.ok) {
       const errBody = await upstream.text().catch(() => '');
-      log(
-        `[${new Date().toISOString()}] Ollama /api/delete ${upstream.status}: ${errBody}`,
-      );
-      res
-        .status(upstream.status)
-        .json({
-          error: `Ollama responded with ${upstream.status}`,
-          detail: errBody,
-        });
+      log(`[${new Date().toISOString()}] Ollama /api/delete ${upstream.status}: ${errBody}`);
+      res.status(upstream.status).json({
+        error: `Ollama responded with ${upstream.status}`,
+        detail: errBody,
+      });
       return;
     }
     res.json({ status: 'deleted', model: modelName });
   } catch (err) {
     const msg = err instanceof Error ? (err.stack ?? err.message) : String(err);
     log(`[${new Date().toISOString()}] Error deleting model: ${msg}`);
-    res
-      .status(502)
-      .json({ error: 'Cannot reach Ollama. Is it running?', detail: msg });
+    res.status(502).json({ error: 'Cannot reach Ollama. Is it running?', detail: msg });
   }
 });
 
