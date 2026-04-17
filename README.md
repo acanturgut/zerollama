@@ -143,39 +143,39 @@ Ollama must be running on the host. On macOS/Windows it is reachable at `host.do
 
 These shortcuts are available in the `zlm` TUI (or `yarn start --ui`):
 
-| Key       | Action                         |
-| --------- | ------------------------------ |
-| `s`       | Start Ollama                   |
-| `x`       | Stop Ollama                    |
-| `r`       | Restart Ollama                 |
-| `l`       | View running/loaded models     |
-| `m`       | Open model picker              |
-| `d`       | Toggle debug chat              |
-| `c`       | Open config editor             |
-| `p`       | Preset picker                  |
-| `e`       | Show API endpoints             |
-| `b`       | Run benchmark                  |
-| `i`       | Toggle web search              |
-| `n`       | Toggle reasoning               |
-| `S`       | Session picker                 |
-| `N`       | New chat session               |
-| `H`       | History viewer                 |
-| `w`       | Toggle log wrap                |
-| `t`       | Toggle response truncation     |
-| `R`       | Toggle raw JSON responses      |
-| `u`       | Update Ollama                  |
-| `h`       | Help                           |
-| `[` / `]` | Resize left info pane          |
-| `{` / `}` | Resize middle logs pane        |
-| `q`       | Quit TUI (server keeps running)|
+| Key       | Action                          |
+| --------- | ------------------------------- |
+| `s`       | Start Ollama                    |
+| `x`       | Stop Ollama                     |
+| `r`       | Restart Ollama                  |
+| `l`       | View running/loaded models      |
+| `m`       | Open model picker               |
+| `d`       | Toggle debug chat               |
+| `c`       | Open config editor              |
+| `p`       | Preset picker                   |
+| `e`       | Show API endpoints              |
+| `b`       | Run benchmark                   |
+| `i`       | Toggle web search               |
+| `n`       | Toggle reasoning                |
+| `S`       | Session picker                  |
+| `N`       | New chat session                |
+| `H`       | History viewer                  |
+| `w`       | Toggle log wrap                 |
+| `t`       | Toggle response truncation      |
+| `R`       | Toggle raw JSON responses       |
+| `u`       | Update Ollama                   |
+| `h`       | Help                            |
+| `[` / `]` | Resize left info pane           |
+| `{` / `}` | Resize middle logs pane         |
+| `q`       | Quit TUI (server keeps running) |
 
 ### Debug chat commands
 
-| Command | Action               |
-| ------- | -------------------- |
-| `:q`    | Quit debug chat      |
-| `:s`    | Open session picker  |
-| `:n`    | New chat session     |
+| Command | Action              |
+| ------- | ------------------- |
+| `:q`    | Quit debug chat     |
+| `:s`    | Open session picker |
+| `:n`    | New chat session    |
 
 ## License
 

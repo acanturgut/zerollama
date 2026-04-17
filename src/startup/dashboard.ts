@@ -343,7 +343,9 @@ async function confirmOllamaRestart(reason: string): Promise<void> {
   const reachable = await checkConnection();
   if (!reachable) {
     // Ollama not running — just log, don't force start
-    log(`[${new Date().toISOString()}] ${reason} — Ollama not running, changes will apply on next start`);
+    log(
+      `[${new Date().toISOString()}] ${reason} — Ollama not running, changes will apply on next start`,
+    );
     return;
   }
 
@@ -418,7 +420,9 @@ async function confirmOllamaRestart(reason: string): Promise<void> {
   box.key('escape', () => {
     box.destroy();
     modelPickerActive = false;
-    log(`[${new Date().toISOString()}] ${reason} — restart skipped, changes apply on next Ollama start`);
+    log(
+      `[${new Date().toISOString()}] ${reason} — restart skipped, changes apply on next Ollama start`,
+    );
     scheduleRender();
   });
 }
@@ -841,7 +845,13 @@ export function showSessionPicker(): void {
   box.key('+', () => {
     const s = createSession();
     if (!s) return;
-    sessions.unshift({ id: s.id, name: s.name, createdAt: s.createdAt, updatedAt: s.updatedAt, messageCount: 0 });
+    sessions.unshift({
+      id: s.id,
+      name: s.name,
+      createdAt: s.createdAt,
+      updatedAt: s.updatedAt,
+      messageCount: 0,
+    });
     selected = 0;
     log(`[${new Date().toISOString()}] Created session: ${s.name}`);
     refreshDebugLabel();
@@ -951,11 +961,7 @@ export async function showRunningModels(): Promise<void> {
   let selected = 0;
 
   function buildContent(): string {
-    const lines = [
-      '',
-      '  {gray-fg}↑/↓ navigate  d unload model  Esc close{/gray-fg}',
-      '',
-    ];
+    const lines = ['', '  {gray-fg}↑/↓ navigate  d unload model  Esc close{/gray-fg}', ''];
     for (let i = 0; i < models.length; i++) {
       const m = models[i];
       const cursor = i === selected ? '{cyan-fg}▸{/cyan-fg}' : ' ';
@@ -995,11 +1001,17 @@ export async function showRunningModels(): Promise<void> {
   };
 
   box.key(['up', 'k'], () => {
-    if (selected > 0) { selected--; refresh(); }
+    if (selected > 0) {
+      selected--;
+      refresh();
+    }
   });
 
   box.key(['down', 'j'], () => {
-    if (selected < models.length - 1) { selected++; refresh(); }
+    if (selected < models.length - 1) {
+      selected++;
+      refresh();
+    }
   });
 
   // Unload model by setting keep_alive to 0
@@ -1152,20 +1164,15 @@ export function logResponse(
 
 function getLocalAddrs(): string[] {
   const ifaces = os.networkInterfaces();
-  const results: string[] = [];
-  for (const [name, addrs] of Object.entries(ifaces)) {
-    for (const iface of addrs ?? []) {
-      if (iface.family !== 'IPv4' || iface.internal) continue;
-      // Short label: en0→WiFi, en1→Eth, bridge/vmnet→VM, utun→VPN, else iface name
-      let tag = name;
-      if (/^en0$/.test(name)) tag = 'WiFi';
-      else if (/^en\d+$/.test(name)) tag = 'Eth';
-      else if (/^bridge|^vmnet/.test(name)) tag = 'VM';
-      else if (/^utun/.test(name)) tag = 'VPN';
-      results.push(`${tag} ${iface.address}:${PORT}`);
+  // Pick the first non-internal IPv4 address (prefer en0/WiFi)
+  for (const name of ['en0', ...Object.keys(ifaces)]) {
+    for (const iface of ifaces[name] ?? []) {
+      if (iface.family === 'IPv4' && !iface.internal) {
+        return [`${iface.address}:${PORT}`];
+      }
     }
   }
-  return results;
+  return [`localhost:${PORT}`];
 }
 
 let bannerNetAddrs = '';
@@ -1718,7 +1725,9 @@ export function refreshDebugLabel(): void {
         return;
       }
     }
-  } catch { /* safe */ }
+  } catch {
+    /* safe */
+  }
   debugBox.setLabel(' {bold}Debug Chat{/bold}  {gray-fg}:q quit  :s sessions  :n new{/gray-fg} ');
 }
 
@@ -3431,7 +3440,8 @@ interface Endpoint {
 function getEndpoints(): Endpoint[] {
   const addrs = getLocalAddrs();
   // Extract just the IP from "WiFi 192.168.1.5:3001" → "192.168.1.5"
-  const firstAddr = addrs.length > 0 ? addrs[0].split(' ')[1]?.split(':')[0] ?? 'localhost' : 'localhost';
+  const firstAddr =
+    addrs.length > 0 ? (addrs[0].split(' ')[1]?.split(':')[0] ?? 'localhost') : 'localhost';
   const base = `http://${firstAddr}:${PORT}`;
   return [
     {
