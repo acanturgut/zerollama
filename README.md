@@ -1,4 +1,6 @@
+
 # Zerollama
+<img width="1412" height="1056" alt="Screenshot 2026-04-17 at 03 13 27" src="https://github.com/user-attachments/assets/6dd8101f-bec7-4d89-8502-0cdd640b0819" />
 
 A terminal-based middleware proxy for [Ollama](https://ollama.com) with a real-time dashboard. Run it on your local network to monitor, manage, and interact with Ollama from a rich TUI.
 
