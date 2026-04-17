@@ -3,6 +3,7 @@ import rateLimit from 'express-rate-limit';
 import { OLLAMA_URL, WEB_SEARCH_MAX_RESULTS, isWebSearchEnabled } from '../config';
 import { searchWeb } from '../services/web-search';
 import { log, addTokenUsage, logResponse } from '../startup/dashboard';
+import { fireWebhook } from '../services/webhook';
 
 const router = Router();
 
@@ -358,6 +359,7 @@ router.post('/api/chat', chatLimiter, async (req: Request, res: Response) => {
     const prompt = lastUserMsg?.content ?? '(no prompt)';
     const responseText = data.message?.content ?? '';
     logResponse(model, prompt, responseText, JSON.stringify(data, null, 2));
+    void fireWebhook({ model, prompt, response: responseText });
 
     if (wantsStream) {
       res.setHeader('Content-Type', 'application/x-ndjson');

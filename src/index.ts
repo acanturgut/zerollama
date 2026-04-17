@@ -2,11 +2,13 @@ import express from 'express';
 import * as http from 'http';
 import { PORT } from './config';
 import { applyMiddleware } from './middleware';
+import { apiKeyAuth } from './middleware/auth';
 import healthController from './controllers/health';
 import modelsController from './controllers/models';
 import chatController from './controllers/chat';
 import ollamaControlController from './controllers/ollama-control';
 import webSearchController from './controllers/web-search';
+import openaiCompatController from './controllers/openai-compat';
 import { createDashboard, startStatusMonitor, log, getScreen } from './startup/dashboard';
 import { setupKeyboardShortcuts } from './startup/keyboard';
 import { checkConnection, stopOllama, startOllama } from './services/ollama';
@@ -14,12 +16,14 @@ import { checkConnection, stopOllama, startOllama } from './services/ollama';
 const app = express();
 
 applyMiddleware(app);
+app.use(apiKeyAuth);
 
 app.use(healthController);
 app.use(modelsController);
 app.use(chatController);
 app.use(ollamaControlController);
 app.use(webSearchController);
+app.use(openaiCompatController);
 
 // ─── 404 handler ─────────────────────────────────────────────────────────────
 app.use((_req: express.Request, res: express.Response) => {

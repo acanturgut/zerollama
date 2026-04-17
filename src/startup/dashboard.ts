@@ -40,6 +40,66 @@ let ollamaStatus = false;
 const zerollamaLogLines: string[] = [];
 const ollamaLogLines: string[] = [];
 
+// ─── Resizable panes ────────────────────────────────────────────────────────
+// leftPct = info pane width.  midPct = middle two logs combined.  right fills rest.
+const PANE_STEPS = [20, 25, 30, 35];
+let leftPaneIdx = 1; // default 25%
+let midPaneIdx = 2; // default 40% (PANE_STEPS[2] = 30 for mid would be wrong; handled separately)
+
+const MID_STEPS = [30, 35, 40, 45, 50];
+// leftPct + midPct must be < 100; right gets the remainder
+function leftPct(): number {
+  return PANE_STEPS[leftPaneIdx] ?? 25;
+}
+function midPct(): number {
+  return MID_STEPS[midPaneIdx] ?? 40;
+}
+function rightLeft(): string {
+  return `${leftPct() + midPct()}%`;
+}
+function rightWidth(): string {
+  return `${100 - leftPct() - midPct()}%`;
+}
+
+export function resizePanes(target: 'left' | 'mid', delta: -1 | 1): void {
+  if (target === 'left') {
+    const next = leftPaneIdx + delta;
+    if (next < 0 || next >= PANE_STEPS.length) return;
+    leftPaneIdx = next;
+  } else {
+    const next = midPaneIdx + delta;
+    if (next < 0 || next >= MID_STEPS.length) return;
+    midPaneIdx = next;
+  }
+  const lp = `${leftPct()}%`;
+  const mp = `${midPct()}%`;
+  const ml = lp;
+  const rl = rightLeft();
+  const rw = rightWidth();
+  if (infoBox) {
+    infoBox.width = lp;
+  }
+  if (debugBox) {
+    debugBox.width = lp;
+  }
+  if (debugInput) {
+    debugInput.width = lp;
+  }
+  if (zerollamaLogBox) {
+    zerollamaLogBox.left = ml;
+    zerollamaLogBox.width = mp;
+  }
+  if (ollamaLogBox) {
+    ollamaLogBox.left = ml;
+    ollamaLogBox.width = mp;
+  }
+  if (responsesBox) {
+    responsesBox.left = rl;
+    responsesBox.width = rw;
+  }
+  scheduleRender();
+}
+
 // ─── Model selection ────────────────────────────────────────────────────────
 const CONFIG_DIR = path.join(os.homedir(), '.zerollama');
 const DEFAULT_MODEL_FILE = path.join(CONFIG_DIR, 'default-model');
@@ -83,6 +143,93 @@ export function setSelectedModel(model: string): void {
       body: JSON.stringify({ model: prev, keep_alive: 0 }),
     }).catch(() => {});
   }
+}
+
+// ─── Health history & uptime tracking ─────────────────────────────────────
+const MAX_HEALTH_HISTORY = 120; // keep last 120 polls (~10 min at 5s interval)
+const healthHistory: boolean[] = [];
+
+function recordHealth(reachable: boolean): void {
+  healthHistory.push(reachable);
+  if (healthHistory.length > MAX_HEALTH_HISTORY) healthHistory.shift();
+}
+
+function uptimePct(): number {
+  if (healthHistory.length === 0) return 100;
+  const ok = healthHistory.filter(Boolean).length;
+  return Math.round((ok / healthHistory.length) * 100);
+}
+
+// ─── GPU utilization ─────────────────────────────────────────────────────────
+interface GpuInfo {
+  name: string;
+  utilPct: number;
+  memUsedMb: number;
+  memTotalMb: number;
+}
+
+let lastGpuInfo: GpuInfo[] = [];
+
+function pollGpu(): GpuInfo[] {
+  const platform = os.platform();
+  try {
+    if (platform === 'darwin') {
+      // Apple Silicon – parse powermetrics sample (requires sudo, often blocked)
+      // Fall back to a no-op on macOS; GPU memory shown via Ollama ps instead.
+      return [];
+    }
+    // NVIDIA – nvidia-smi
+    const raw = execSync(
+      'nvidia-smi --query-gpu=name,utilization.gpu,memory.used,memory.total --format=csv,noheader,nounits 2>/dev/null',
+      { encoding: 'utf-8', timeout: 2000 },
+    );
+    return raw
+      .trim()
+      .split('\n')
+      .filter(Boolean)
+      .map((line) => {
+        const parts = line.split(',').map((p) => p.trim());
+        return {
+          name: parts[0] ?? 'GPU',
+          utilPct: parseInt(parts[1] ?? '0', 10),
+          memUsedMb: parseInt(parts[2] ?? '0', 10),
+          memTotalMb: parseInt(parts[3] ?? '0', 10),
+        };
+      });
+  } catch {
+    return [];
+  }
+}
+
+// ─── Token-per-second tracking (rolling window) ────────────────────────────
+const TOK_WINDOW = 60; // keep last 60 data points
+const tokPerSecHistory: number[] = [];
+let lastTokTotal = 0;
+let lastTokTime = Date.now();
+
+function recordTokPerSec(): void {
+  const now = Date.now();
+  const elapsed = (now - lastTokTime) / 1000;
+  const current = sessionPromptTokens + sessionCompletionTokens;
+  const delta = current - lastTokTotal;
+  const tps = elapsed > 0 ? delta / elapsed : 0;
+  tokPerSecHistory.push(Math.round(tps));
+  if (tokPerSecHistory.length > TOK_WINDOW) tokPerSecHistory.shift();
+  lastTokTotal = current;
+  lastTokTime = now;
+}
+
+function buildTokGraph(): string {
+  if (tokPerSecHistory.length < 2) return '{gray-fg}no data{/gray-fg}';
+  const max = Math.max(...tokPerSecHistory, 1);
+  const bars = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
+  return tokPerSecHistory
+    .slice(-20)
+    .map((v) => {
+      const idx = Math.min(7, Math.floor((v / max) * 8));
+      return v > 0 ? `{green-fg}${bars[idx]}{/green-fg}` : '{gray-fg}▁{/gray-fg}';
+    })
+    .join('');
 }
 
 // ─── Session stats ──────────────────────────────────────────────────────────
@@ -190,6 +337,7 @@ export function addTokenUsage(promptTokens: number, completionTokens: number): v
   sessionPromptTokens += promptTokens;
   sessionCompletionTokens += completionTokens;
   sessionRequests++;
+  recordTokPerSec();
   refreshUI();
 }
 
@@ -368,6 +516,9 @@ export function showHelp(): void {
     '    {cyan-fg}t{/cyan-fg}   Toggle truncation — truncated limits response preview to 300 chars',
     '    {cyan-fg}R{/cyan-fg}   Toggle raw mode — show full JSON response instead of Q/A format',
     '    {cyan-fg}e{/cyan-fg}   Show API endpoints with copyable curl commands',
+    '    {cyan-fg}H{/cyan-fg}   History viewer — navigate past responses with ↑/↓',
+    '    {cyan-fg}[{/cyan-fg}/{cyan-fg}]{/cyan-fg} Shrink/grow left info pane',
+    '    {cyan-fg}{{/cyan-fg}/{cyan-fg}}{/cyan-fg} Shrink/grow middle logs pane',
     '',
     '  {bold}Other{/bold}',
     '    {cyan-fg}h{/cyan-fg}   Show this help',
@@ -437,6 +588,84 @@ export function toggleWebSearch(): void {
   const enabled = toggleWebSearchEnabled();
   log(`[${new Date().toISOString()}] Web search: ${enabled ? 'enabled' : 'disabled'}`);
   refreshUI();
+}
+
+// ─── Keyboard-navigable history viewer ────────────────────────────────────
+export function showHistoryViewer(): void {
+  if (modelPickerActive) return;
+  if (responseHistory.length === 0) {
+    log(`[${new Date().toISOString()}] No response history yet`);
+    return;
+  }
+  modelPickerActive = true;
+
+  let selected = responseHistory.length - 1;
+
+  function buildContent(): string {
+    const entry = responseHistory[selected];
+    const nav = `{gray-fg}↑/↓ navigate  Esc close  ${selected + 1}/${responseHistory.length}{/gray-fg}`;
+    return [
+      '',
+      `  ${nav}`,
+      '',
+      `  {cyan-fg}${entry.ts}{/cyan-fg}  {bold}{magenta-fg}${entry.model}{/magenta-fg}{/bold}`,
+      '',
+      `  {yellow-fg}Prompt:{/yellow-fg}`,
+      `  ${entry.prompt.replace(/\n/g, '\n  ')}`,
+      '',
+      `  {green-fg}Response:{/green-fg}`,
+      `  ${entry.response.replace(/\n/g, '\n  ')}`,
+      '',
+      `  {gray-fg}Raw JSON (${entry.rawJson.length} bytes){/gray-fg}`,
+    ].join('\n');
+  }
+
+  const box = blessed.box({
+    parent: screen,
+    top: 'center',
+    left: 'center',
+    width: '80%',
+    height: '80%',
+    border: { type: 'line' },
+    label: ' {bold}History Viewer{/bold}  {gray-fg}↑/↓ navigate · Esc close{/gray-fg} ',
+    tags: true,
+    scrollable: true,
+    alwaysScroll: true,
+    keys: true,
+    vi: true,
+    mouse: true,
+    content: buildContent(),
+    style: { border: { fg: 'magenta' }, label: { fg: 'magenta', bold: true } },
+  });
+
+  box.focus();
+  scheduleRender();
+
+  const refresh = () => {
+    box.setContent(buildContent());
+    box.scrollTo(0);
+    scheduleRender();
+  };
+
+  box.key(['up', 'k'], () => {
+    if (selected > 0) {
+      selected--;
+      refresh();
+    }
+  });
+
+  box.key(['down', 'j'], () => {
+    if (selected < responseHistory.length - 1) {
+      selected++;
+      refresh();
+    }
+  });
+
+  box.key(['escape', 'q'], () => {
+    box.destroy();
+    modelPickerActive = false;
+    scheduleRender();
+  });
 }
 
 const MAX_RESPONSE_LEN = 300;
@@ -515,9 +744,24 @@ export function trackResponse(): void {
 
 function buildInfoContent(): string {
   const webSearchTag = isWebSearchEnabled() ? '{green-fg}on{/green-fg}' : '{red-fg}off{/red-fg}';
+  const gpuLines: string[] = [];
+  if (lastGpuInfo.length > 0) {
+    gpuLines.push('', '  {bold}GPU{/bold}');
+    for (const g of lastGpuInfo) {
+      const col = g.utilPct > 80 ? 'red-fg' : g.utilPct > 50 ? 'yellow-fg' : 'green-fg';
+      gpuLines.push(
+        `    {${col}}${g.utilPct}%{/${col}}  ${g.memUsedMb}/${g.memTotalMb} MB  {gray-fg}${g.name.slice(0, 18)}{/gray-fg}`,
+      );
+    }
+  }
+
+  const tokGraph = buildTokGraph();
+  const uptimeLine = `    Uptime  {bold}${uptimePct()}%{/bold}  {gray-fg}(${healthHistory.length} polls){/gray-fg}`;
+
   const lines: string[] = [
     '',
     '  {bold}Commands{/bold}  {gray-fg}h help{/gray-fg}',
+    ...gpuLines,
     '    {cyan-fg}s{/cyan-fg} start    {cyan-fg}x{/cyan-fg} stop',
     '    {cyan-fg}r{/cyan-fg} restart  {cyan-fg}c{/cyan-fg} config',
     '    {cyan-fg}d{/cyan-fg} debug    {cyan-fg}m{/cyan-fg} model',
@@ -525,7 +769,7 @@ function buildInfoContent(): string {
     '    {cyan-fg}w{/cyan-fg} wrap     {cyan-fg}u{/cyan-fg} update',
     '    {cyan-fg}t{/cyan-fg} trunc    {cyan-fg}R{/cyan-fg} raw',
     '    {cyan-fg}i{/cyan-fg} internet {cyan-fg}h{/cyan-fg} help',
-    '    {cyan-fg}q{/cyan-fg} quit',
+    '    {cyan-fg}H{/cyan-fg} history  {cyan-fg}q{/cyan-fg} quit',
     '',
     '  {bold}Ollama Config{/bold}  {gray-fg}c{/gray-fg}',
     `    Models     {cyan-fg}${ollamaConfig.maxLoadedModels.padEnd(5)}{/cyan-fg} Parallel  {cyan-fg}${ollamaConfig.numParallel}{/cyan-fg}`,
@@ -542,6 +786,8 @@ function buildInfoContent(): string {
     `    Tokens     {bold}${(sessionPromptTokens + sessionCompletionTokens).toLocaleString()}{/bold}`,
     `      in       ${sessionPromptTokens.toLocaleString()}`,
     `      out      ${sessionCompletionTokens.toLocaleString()}`,
+    `    Tok/s   ${tokGraph}`,
+    uptimeLine,
   ];
   return lines.join('\n');
 }
@@ -810,8 +1056,30 @@ export function startStatusMonitor(initialStatus: boolean): NodeJS.Timeout {
   }
 
   let lastStatus = initialStatus;
+  let watchdogRestartCount = 0;
+
   const interval = setInterval(async () => {
     const reachable = await checkConnection();
+    recordHealth(reachable);
+    recordTokPerSec();
+    lastGpuInfo = pollGpu();
+
+    // ── Watchdog: auto-restart if Ollama goes down ───────────────────────
+    if (!reachable && lastStatus) {
+      watchdogRestartCount++;
+      log(
+        `[${new Date().toISOString()}] Ollama went unreachable — watchdog restarting (attempt ${watchdogRestartCount})…`,
+      );
+      void restartOllama().then((ok) => {
+        setOllamaStatus(ok);
+        log(
+          ok
+            ? `[${new Date().toISOString()}] Watchdog restarted Ollama successfully`
+            : `[${new Date().toISOString()}] Watchdog restart failed`,
+        );
+      });
+    }
+
     if (reachable !== lastStatus) {
       const ts = new Date().toISOString();
       const label = reachable ? '● reachable' : '● unreachable';

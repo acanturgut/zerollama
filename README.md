@@ -48,12 +48,35 @@ The proxy starts on **http://localhost:3001** by default. Point any Ollama-compa
 
 ### Environment variables
 
-| Variable                 | Default                  | Description                                |
-| ------------------------ | ------------------------ | ------------------------------------------ |
-| `OLLAMA_URL`             | `http://127.0.0.1:11434` | Upstream Ollama address                    |
-| `PORT`                   | `3001`                   | Proxy listen port                          |
-| `WEB_SEARCH_ENABLED`     | `1`                      | Enable built-in web search tool            |
-| `WEB_SEARCH_MAX_RESULTS` | `5`                      | Default max results returned by web search |
+| Variable                 | Default                  | Description                                                        |
+| ------------------------ | ------------------------ | ------------------------------------------------------------------ |
+| `OLLAMA_URL`             | `http://127.0.0.1:11434` | Upstream Ollama address                                            |
+| `PORT`                   | `3001`                   | Proxy listen port                                                  |
+| `WEB_SEARCH_ENABLED`     | `1`                      | Enable built-in web search tool                                    |
+| `WEB_SEARCH_MAX_RESULTS` | `5`                      | Default max results returned by web search                         |
+| `ZEROLLAMA_API_KEY`      | _(unset)_                | Require this key via `Authorization: Bearer` or `x-api-key` header |
+| `WEBHOOK_URL`            | _(unset)_                | POST response summaries here after each completion                 |
+
+## OpenAI-compatible API
+
+Zerollama exposes a `/v1/chat/completions` endpoint compatible with the OpenAI client spec. Point any OpenAI SDK at `http://localhost:3001` with any non-empty API key:
+
+```bash
+curl http://localhost:3001/v1/chat/completions \
+  -H 'Authorization: Bearer any-key' \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"llama3","messages":[{"role":"user","content":"Hello"}]}'
+```
+
+A model list is also available at `GET /v1/models`.
+
+## Docker
+
+```bash
+docker compose up -d
+```
+
+Ollama must be running on the host. On macOS/Windows it is reachable at `host.docker.internal:11434` (the default). On Linux `extra_hosts: host.docker.internal:host-gateway` is wired automatically in `docker-compose.yml`.
 
 ## Web search
 
@@ -67,22 +90,23 @@ curl 'http://localhost:3001/api/web-search?q=latest%20ollama%20release'
 
 ## Keyboard shortcuts
 
-| Key | Action                          |
-| --- | ------------------------------- |
-| `s` | Start Ollama                    |
-| `x` | Stop Ollama                     |
-| `r` | Restart Ollama                  |
-| `c` | Open config editor              |
-| `d` | Toggle debug chat               |
-| `m` | Open model picker               |
-| `e` | Show API endpoints              |
-| `b` | Run benchmark                   |
-| `i` | Toggle built-in web search      |
-| `w` | Toggle log line wrap            |
-| `t` | Toggle response truncation      |
-| `R` | Toggle raw JSON responses       |
-| `u` | Update Ollama to latest release |
-| `q` | Quit                            |
+| Key | Action                             |
+| --- | ---------------------------------- |
+| `s` | Start Ollama                       |
+| `x` | Stop Ollama                        |
+| `r` | Restart Ollama                     |
+| `c` | Open config editor                 |
+| `d` | Toggle debug chat                  |
+| `m` | Open model picker                  |
+| `e` | Show API endpoints                 |
+| `b` | Run benchmark                      |
+| `i` | Toggle built-in web search         |
+| `H` | History viewer (navigate with ↑/↓) || `[` / `]` | Shrink / grow left info pane    |
+| `{` / `}` | Shrink / grow middle logs pane  || `w` | Toggle log line wrap               |
+| `t` | Toggle response truncation         |
+| `R` | Toggle raw JSON responses          |
+| `u` | Update Ollama to latest release    |
+| `q` | Quit                               |
 
 ## License
 

@@ -17,6 +17,8 @@ import {
   toggleWebSearch,
   showHelp,
   runUpdateOllama,
+  showHistoryViewer,
+  resizePanes,
 } from './dashboard';
 
 export function setupKeyboardShortcuts(shutdown: () => void): void {
@@ -113,5 +115,24 @@ export function setupKeyboardShortcuts(shutdown: () => void): void {
   screen.key('i', () => {
     if (guard()) return;
     toggleWebSearch();
+  });
+
+  screen.key('H', () => {
+    if (guard()) return;
+    showHistoryViewer();
+  });
+
+  // Resizable panes: [ / ] shrink/grow left info pane; { / } shrink/grow middle logs pane
+  screen.key('[', () => {
+    if (!guard()) resizePanes('left', -1);
+  });
+  screen.key(']', () => {
+    if (!guard()) resizePanes('left', 1);
+  });
+  screen.key('{', () => {
+    if (!guard()) resizePanes('mid', -1);
+  });
+  screen.key('}', () => {
+    if (!guard()) resizePanes('mid', 1);
   });
 }
