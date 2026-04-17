@@ -19,6 +19,7 @@ import {
   toggleLogWrap,
   toggleTruncation,
   toggleRawResponses,
+  toggleWebSearch,
   showHelp,
   runUpdateOllama,
 } from './dashboard';
@@ -124,5 +125,10 @@ export function setupKeyboardShortcuts(shutdown: () => void): void {
   screen.key('h', () => {
     if (guard()) return;
     showHelp();
+  });
+
+  screen.key('i', () => {
+    if (guard()) return;
+    toggleWebSearch();
   });
 }

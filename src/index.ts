@@ -6,6 +6,7 @@ import healthController from './controllers/health';
 import modelsController from './controllers/models';
 import chatController from './controllers/chat';
 import ollamaControlController from './controllers/ollama-control';
+import webSearchController from './controllers/web-search';
 import {
   createDashboard,
   startStatusMonitor,
@@ -24,6 +25,7 @@ app.use(healthController);
 app.use(modelsController);
 app.use(chatController);
 app.use(ollamaControlController);
+app.use(webSearchController);
 
 // ─── 404 handler ─────────────────────────────────────────────────────────────
 app.use((_req: express.Request, res: express.Response) => {

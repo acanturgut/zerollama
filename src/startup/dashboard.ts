@@ -2,8 +2,15 @@ import blessed from 'blessed';
 import * as os from 'os';
 import * as fs from 'fs';
 import * as path from 'path';
-import { OLLAMA_URL, PORT } from '../config';
-import { checkConnection, updateOllama } from '../services/ollama';
+import {
+  OLLAMA_URL,
+  PORT,
+  isWebSearchEnabled,
+  readRuntimeSettings,
+  toggleWebSearchEnabled,
+  writeRuntimeSettings,
+} from '../config';
+import { checkConnection, restartOllama, updateOllama } from '../services/ollama';
 
 // ─── Debounced render ───────────────────────────────────────────────────────
 let renderPending = false;
@@ -100,7 +107,7 @@ export interface OllamaConfig {
   multiuserCache: string;
 }
 
-let ollamaConfig: OllamaConfig = {
+const DEFAULT_OLLAMA_CONFIG: OllamaConfig = {
   maxLoadedModels: '1',
   numParallel: '2',
   flashAttention: '1',
@@ -116,13 +123,41 @@ let ollamaConfig: OllamaConfig = {
   multiuserCache: '0',
 };
 
+let ollamaConfig: OllamaConfig = {
+  ...DEFAULT_OLLAMA_CONFIG,
+  ...(readRuntimeSettings().ollamaConfig ?? {}),
+};
+
 export function getOllamaConfig(): OllamaConfig {
   return { ...ollamaConfig };
 }
 
 export function setOllamaConfig(cfg: Partial<OllamaConfig>): void {
   ollamaConfig = { ...ollamaConfig, ...cfg };
+  writeRuntimeSettings({ ollamaConfig: { ...ollamaConfig } });
   refreshUI();
+}
+
+let configRestartInProgress = false;
+
+async function restartOllamaAfterConfigChange(reason: string): Promise<void> {
+  if (configRestartInProgress) {
+    log(`[${new Date().toISOString()}] Config restart already in progress`);
+    return;
+  }
+  configRestartInProgress = true;
+  try {
+    log(`[${new Date().toISOString()}] ${reason} — restarting Ollama to apply changes…`);
+    const ok = await restartOllama();
+    setOllamaStatus(ok);
+    log(
+      ok
+        ? `[${new Date().toISOString()}] Ollama restarted with updated config`
+        : `[${new Date().toISOString()}] Ollama did not respond after config restart`,
+    );
+  } finally {
+    configRestartInProgress = false;
+  }
 }
 
 export function getOllamaEnv(): Record<string, string> {
@@ -339,6 +374,8 @@ export function showHelp(): void {
     '    {cyan-fg}d{/cyan-fg}   Toggle debug chat — interactive prompt to test the current model',
     '        {gray-fg}Also enables OLLAMA_DEBUG=1 for verbose Ollama logging{/gray-fg}',
     '    {cyan-fg}b{/cyan-fg}   Run benchmark — 3 predefined prompts, scored by tokens/sec',
+    '        {gray-fg}/api/chat now injects a built-in web_search tool for tool-capable models{/gray-fg}',
+    `    {cyan-fg}i{/cyan-fg}   Toggle web search — currently ${isWebSearchEnabled() ? '{green-fg}enabled{/green-fg}' : '{red-fg}disabled{/red-fg}'}`,
     '',
     '  {bold}Display{/bold}',
     '    {cyan-fg}w{/cyan-fg}   Toggle log wrap — nowrap shows one line per entry, wrap shows full text',
@@ -410,6 +447,14 @@ export async function runUpdateOllama(): Promise<void> {
   }
 }
 
+export function toggleWebSearch(): void {
+  const enabled = toggleWebSearchEnabled();
+  log(
+    `[${new Date().toISOString()}] Web search: ${enabled ? 'enabled' : 'disabled'}`,
+  );
+  refreshUI();
+}
+
 const MAX_RESPONSE_LEN = 300;
 
 export function logResponse(
@@ -479,6 +524,9 @@ export function trackResponse(): void {
 }
 
 function buildInfoContent(): string {
+  const webSearchTag = isWebSearchEnabled()
+    ? '{green-fg}on{/green-fg}'
+    : '{red-fg}off{/red-fg}';
   const lines: string[] = [
     '',
     '  {bold}Commands{/bold}  {gray-fg}h help{/gray-fg}',
@@ -488,7 +536,8 @@ function buildInfoContent(): string {
     '    {cyan-fg}e{/cyan-fg} api      {cyan-fg}b{/cyan-fg} bench',
     '    {cyan-fg}w{/cyan-fg} wrap     {cyan-fg}u{/cyan-fg} update',
     '    {cyan-fg}t{/cyan-fg} trunc    {cyan-fg}R{/cyan-fg} raw',
-    '    {cyan-fg}h{/cyan-fg} help     {cyan-fg}q{/cyan-fg} quit',
+    '    {cyan-fg}i{/cyan-fg} internet {cyan-fg}h{/cyan-fg} help',
+    '    {cyan-fg}q{/cyan-fg} quit',
     '',
     '  {bold}Ollama Config{/bold}  {gray-fg}c{/gray-fg}',
     `    Models     {cyan-fg}${ollamaConfig.maxLoadedModels.padEnd(5)}{/cyan-fg} Parallel  {cyan-fg}${ollamaConfig.numParallel}{/cyan-fg}`,
@@ -496,6 +545,7 @@ function buildInfoContent(): string {
     `    KeepAlive  {cyan-fg}${ollamaConfig.keepAlive.padEnd(5)}{/cyan-fg} Timeout   {cyan-fg}${ollamaConfig.loadTimeout}{/cyan-fg}`,
     `    Context    {cyan-fg}${(ollamaConfig.contextLength || 'auto').padEnd(5)}{/cyan-fg} KVCache   {cyan-fg}${ollamaConfig.kvCacheType || 'f16'}{/cyan-fg}`,
     `    MaxQueue   {cyan-fg}${ollamaConfig.maxQueue.padEnd(5)}{/cyan-fg} Debug     {cyan-fg}${ollamaConfig.debug === '1' ? 'on' : 'off'}{/cyan-fg}`,
+    `    WebSearch  ${webSearchTag}  {gray-fg}(i toggle){/gray-fg}`,
     '',
     '  {bold}Session{/bold}',
     `    Requests   {bold}${sessionConnections}{/bold}`,
@@ -815,13 +865,14 @@ export function toggleDebug(): void {
     // Enable Ollama debug logging
     setOllamaConfig({ debug: '1' });
     log(
-      `[${new Date().toISOString()}] Debug mode ON — OLLAMA_DEBUG=1 (restart Ollama to apply)`,
+      `[${new Date().toISOString()}] Debug mode ON — OLLAMA_DEBUG=1`,
     );
     infoBox.height = '40%-3';
     debugBox.show();
     debugInput.show();
     scheduleRender();
     debugInput.readInput();
+    void restartOllamaAfterConfigChange('Debug mode enabled');
   } else {
     setOllamaConfig({ debug: '0' });
     log(`[${new Date().toISOString()}] Debug mode OFF — OLLAMA_DEBUG=0`);
@@ -832,6 +883,7 @@ export function toggleDebug(): void {
     debugInput.cancel();
     screen.realloc();
     scheduleRender();
+    void restartOllamaAfterConfigChange('Debug mode disabled');
   }
 }
 
@@ -1408,7 +1460,7 @@ async function runDebugQuery(prompt: string): Promise<void> {
   const start = performance.now();
   try {
     log(`[${ts()}] Debug: querying ${model}…`);
-    const resp = await fetch(`${OLLAMA_URL}/api/chat`, {
+    const resp = await fetch(`http://127.0.0.1:${PORT}/api/chat`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -2166,10 +2218,11 @@ function showPresetPicker(): void {
     list.destroy();
     setOllamaConfig(preset.config);
     log(
-      `[${new Date().toISOString()}] Preset applied: ${preset.name} (restart Ollama to apply)`,
+      `[${new Date().toISOString()}] Preset applied: ${preset.name}`,
     );
     modelPickerActive = false;
     refreshUI();
+    void restartOllamaAfterConfigChange(`Preset applied: ${preset.name}`);
   };
 
   list.key(['enter', 'return'], () => {
@@ -2216,8 +2269,9 @@ function editConfigField(field: ConfigField): void {
     if (val) {
       setOllamaConfig({ [field.key]: val });
       log(
-        `[${new Date().toISOString()}] Config: ${field.label} = ${val} (restart Ollama to apply)`,
+        `[${new Date().toISOString()}] Config: ${field.label} = ${val}`,
       );
+      void restartOllamaAfterConfigChange(`Config updated: ${field.label}`);
     }
     modelPickerActive = false;
     scheduleRender();
@@ -2592,8 +2646,14 @@ function getEndpoints(): Endpoint[] {
     {
       method: 'POST',
       path: '/api/chat',
-      desc: 'Chat completion (streaming)',
+      desc: 'Chat completion with built-in web_search tool support',
       curl: `curl -X POST ${base}/api/chat -H 'Content-Type: application/json' -d '{"model":"llama3","messages":[{"role":"user","content":"hello"}]}'`,
+    },
+    {
+      method: 'GET',
+      path: '/api/web-search',
+      desc: 'Direct web search endpoint',
+      curl: `curl '${base}/api/web-search?q=latest%20ollama%20release'`,
     },
     {
       method: 'POST',
